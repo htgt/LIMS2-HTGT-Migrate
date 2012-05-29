@@ -43,10 +43,10 @@ while ( $r ) {
     while ( $r and $r->{bac_library} eq $bac{bac_library} and $r->{bac_name} eq $bac{bac_name} ) {
         if ( $r->{golden_path} eq $ASSEMBLY ) {
             push @loci, +{
-                assembly   => $ASSEMBLY,
-                chromosome => $r->{chromosome_name},
-                bac_start  => $r->{bac_start},
-                bac_end    => $r->{bac_end}
+                assembly  => $ASSEMBLY,
+                chr_name  => $r->{chromosome_name},
+                chr_start => $r->{bac_start},
+                chr_end   => $r->{bac_end}
             };
         }
         $r = $select_bacs_sth->fetchrow_hashref;
