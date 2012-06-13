@@ -14,6 +14,7 @@ use Sub::Exporter -setup => {
               trim
               parse_oracle_date
               sponsor2pipeline
+              canonical_username
       )
     ]
 };
@@ -22,6 +23,9 @@ use Scalar::Util qw( blessed );
 use Try::Tiny;
 use Log::Log4perl qw( :easy );
 use Const::Fast;
+use YAML::Any;
+
+our $USERS_YAML = '/var/tmp/users.yaml';
 
 {
     
@@ -149,5 +153,22 @@ sub trim {
     return $str;
 }
 
+{
+    my $canon_user;
+
+    sub canonical_username {
+        my $name = shift;
+
+        unless ( $canon_user ) {
+            my %canon_user;
+            for my $u ( YAML::Any::LoadFile( $USERS_YAML ) ) {
+                $canon_user{ $u->{user_name} } = lc( $u->{map_to} || $u->{user_name} );
+            }
+            $canon_user = \%canon_user;
+        }
+
+        return lc( $canon_user->{$name} || $name );
+    }
+}
 
 1;
