@@ -9,7 +9,10 @@ use DateTime;
 use Log::Log4perl qw( :easy );
 use Try::Tiny;
 use Const::Fast;
-use LIMS2::HTGT::Migrate::Utils qw( trim parse_oracle_date );
+use LIMS2::HTGT::Migrate::Utils qw( trim parse_oracle_date canonical_username );
+use HTGT::Utils::EnsEMBL;
+use List::MoreUtils qw( uniq );
+use Getopt::Long;
 
 const my $ASSEMBLY => 'NCBIM37';
 
@@ -24,10 +27,15 @@ const my @GENOTYPING_PRIMER_NAMES => qw( GF1 GF2 GF3 GF4
 
 const my @OLIGO_NAMES => qw( G5 U5 U3 D5 D3 G3 );
 
+GetOptions(
+    'start=i' => \my $start_id,
+    'end=i'   => \my $end_id
+) or die "Usage: $0 [--start=START] [--end=END]\n";
+
 Log::Log4perl->easy_init(
     {
         level  => $WARN,
-        layout => '%p %x %m%n'
+        layout => '%p [design %x] %m%n'
     }
 );
 
@@ -41,14 +49,26 @@ if ( @ARGV ) {
     $designs_rs = $schema->resultset( 'Design' )->search( { design_id => \@ARGV } );
 }
 else {
+    my %search = (
+        'statuses.is_current'            => 1,
+        'design_status_dict.description' => \@WANTED_DESIGN_STATUS
+    );
+    if ( defined $start_id and defined $end_id ) {
+        $search{'-and'} = [
+            { 'me.design_id' => { '>=', $start_id } },
+            { 'me.design_id' => { '<',  $end_id   } }
+        ]
+    }
+    elsif ( defined $start_id ) {
+        $search{'me.design_id'} = { '>=', $start_id };
+    }
+    elsif ( defined $end_id ) {
+        $search{'me.design_id'} = { '<', $end_id };
+    }
     $designs_rs = $schema->resultset( 'Design' )->search(
+        \%search,
         {
-            'statuses.is_current'            => 1,
-            'design_status_dict.description' => \@WANTED_DESIGN_STATUS,
-            'projects.project_id'            => { '!=', undef },
-        },
-        {
-            join => [ 'projects', { 'statuses' => 'design_status_dict' } ],
+            join => { 'statuses' => 'design_status_dict' },
             distinct => 1
         }
     );
@@ -57,20 +77,23 @@ else {
 while ( my $design = $designs_rs->next ) {
     Log::Log4perl::NDC->push( $design->design_id );
     try {
-        my $type = type_for( $design );
+        my $type         = type_for( $design );
+        my $oligos       = oligos_for( $design, $type );
         my $created_date = parse_oracle_date( $design->created_date ) || $run_date;
+        my $transcript   = target_transcript_for( $design );        
         my %design = (
-            design_id               => $design->design_id,
-            design_name             => $design->find_or_create_name,
-            design_type             => $type,
-            created_by              => $design->created_user || 'migrate_script',
+            id                      => $design->design_id,
+            name                    => $design->find_or_create_name,
+            type                    => $type,
+            created_by              => ( $design->created_user ? canonical_username( $design->created_user) : 'unknown' ),
             created_at              => $created_date->iso8601,
-            phase                   => phase_for( $design, $type ),
+            phase                   => phase_for( $oligos, $transcript, $type ),
             validated_by_annotation => $design->validated_by_annotation || '',
-            oligos                  => oligos_for( $design ),
+            oligos                  => $oligos,
             genotyping_primers      => genotyping_primers_for( $design ),
             comments                => comments_for( $design, $created_date ),
-            target_transcript       => target_transcript_for( $design )
+            target_transcript       => $transcript,
+            gene_ids                => gene_ids_for( $design )                
         );
         print YAML::Any::Dump( \%design );
     }
@@ -83,11 +106,11 @@ while ( my $design = $designs_rs->next ) {
 }
 
 sub oligos_for {
-    my $design = shift;
+    my ( $design, $design_type ) = @_;
 
     my @oligos;
 
-    my $features = $design->validated_display_features;
+    my $features = validated_display_features_for( $design );    
 
     for my $oligo_name ( @OLIGO_NAMES ) {
         my $oligo = $features->{$oligo_name} or next;
@@ -97,8 +120,8 @@ sub oligos_for {
             next;
         }
         push @oligos, {
-            design_oligo_type => $oligo_name,
-            design_oligo_seq  => $oligo_seq[0]->data_item,
+            type => $oligo_name,
+            seq  => $oligo_seq[0]->data_item,
             loci => [
                 {
                     assembly   => $ASSEMBLY,
@@ -111,7 +134,45 @@ sub oligos_for {
         };
     }
 
+    sanity_check_oligos( $design_type, \@oligos );
+    
     return \@oligos;
+}
+
+sub sanity_check_oligos {
+    my ( $design_type, $oligos ) = @_;
+
+    die "Design has no validated oligos with NCBIM37 locus\n"
+        unless @{$oligos} > 1;
+    
+    my %loci = map { $_->{type} => $_->{loci}[0] } @{$oligos};
+
+    my @chromosomes = uniq map { $_->{chr_name} } values %loci;
+    die "Oligos have inconsistent chromosome\n" unless @chromosomes == 1;
+
+    my @strands = uniq map { $_->{chr_strand} } values %loci;
+    die "Oligos have inconsistent strand\n" unless @strands == 1;
+
+    my @oligo_names = $strands[0] eq 1 ? @OLIGO_NAMES : reverse @OLIGO_NAMES;
+
+    if ( $design_type eq 'insertion' or $design_type eq 'deletion' ) {
+        @oligo_names = grep { $_ ne 'U3' and $_ ne 'D5' } @oligo_names;
+    }
+
+    for my $o ( @oligo_names ) {
+        my $locus = $loci{$o};
+        die "Expected oligo oligo $o has no locus\n"
+            unless $locus;
+        die "Oligo $o has end before start\n"
+            unless $locus->{chr_end} > $locus->{chr_start};
+    }
+
+    for my $ix ( 0 .. (@oligo_names - 2) ) {
+        my $o1 = $oligo_names[$ix];
+        my $o2 = $oligo_names[$ix+1];
+        die "Oligos $o1 and $o2 in unexpected order\n"
+            unless $loci{$o1}{chr_end} <= $loci{$o2}{chr_start};
+    }
 }
 
 sub genotyping_primers_for {
@@ -136,8 +197,8 @@ sub genotyping_primers_for {
             next;
         }
         push @genotyping_primers, {
-            genotyping_primer_type => $feature->feature_type->description,
-            genotyping_primer_seq  => $primer_seq[0]->data_item
+            type => $feature->feature_type->description,
+            seq  => $primer_seq[0]->data_item
         }
     }
 
@@ -153,11 +214,11 @@ sub comments_for {
         next if $category eq 'Artificial intron design';
         my $created_at = parse_oracle_date( $comment->edited_date ) || $created_date;
         push @comments, {
-            design_comment          => $comment->design_comment,
-            design_comment_category => $category,
-            created_by              => $comment->edited_user || 'migrate_script',
-            created_at              => $created_date->iso8601,
-            is_public               => $comment->visibility eq 'public'
+            comment_text => $comment->design_comment,
+            category     => $category,
+            created_by   => ( $comment->edited_user ? canonical_username( $comment->edited_user ) : 'unknown' ),
+            created_at   => $created_date->iso8601,
+            is_public    => $comment->visibility eq 'public'
         };
     }
 
@@ -166,6 +227,20 @@ sub comments_for {
 
 sub type_for {
     my $design = shift;
+
+    my $intron_replacement =
+        $design->search_related_rs( 'design_user_comments',
+                                  {
+                                      'category.category_name' => 'Intron replacement'
+                              },
+                              {
+                                  join => 'category'
+                              }
+                          )->count;
+
+    if ( $intron_replacement > 0 ) {
+        return 'intron-replacement';
+    }
 
     if ( $design->is_artificial_intron ) {
         return 'artificial-intron';
@@ -189,19 +264,69 @@ sub type_for {
 }
 
 sub phase_for {
-    my ( $design, $type ) = @_;
+    my ( $oligos, $transcript_id, $design_type ) = @_;
 
-    my $phase = $design->phase;
-
-    if ( defined $phase ) {
-        return $phase;
+    unless ( $transcript_id ) {        
+        WARN "Cannot compute phase without transcript";
+        return undef;
+    }    
+    
+    my ( $U5 ) = grep { $_->{type} eq 'U5' } @{$oligos};
+    unless ( $U5 and @{$U5->{loci}} ) {
+        WARN "Cannot compute phase without U5 oligo";
+        return undef;
+    }
+    
+    my $transcript = HTGT::Utils::EnsEMBL->transcript_adaptor->fetch_by_stable_id( $transcript_id );
+    unless ( $transcript ) {
+        WARN "Failed to retrieve transcript $transcript_id";
+        return undef;
     }
 
-    if ( $design->start_exon and $type ne 'artificial-intron' ) {
-        return $design->start_exon->phase;
+    unless ( $transcript->coding_region_start ) {
+        WARN "Non-coding transcript $transcript_id";
+        return undef;
     }
+    
+    my $U5_locus = $U5->{loci}[0];
 
-    die "Unable to determine phase for design " . $design->design_id . "\n";
+    # XXX Check for off-by-one errors in boundary cases
+    if ( $U5_locus->{chr_strand} == 1 ) {
+        my $cs = $U5_locus->{chr_end} + 1;
+        if ( $transcript->coding_region_start > $cs or $transcript->coding_region_end < $cs ) {
+            return -1;
+        }
+        my $coding_bases = 0;
+        for my $e ( @{ $transcript->get_all_Exons } ) {
+            next unless $e->coding_region_start( $transcript );
+            last if $e->seq_region_start > $cs;
+            if ( $e->seq_region_end < $cs ) {
+                $coding_bases += $e->coding_region_end( $transcript ) - $e->coding_region_start( $transcript ) + 1;
+            }                
+            else {
+                $coding_bases += $cs - $e->coding_region_start( $transcript );
+            }
+        }
+        return $coding_bases % 3;
+    }
+    else {
+        my $ce = $U5_locus->{chr_start} - 1;
+        if ( $transcript->coding_region_start > $ce or $transcript->coding_region_end < $ce ) {
+            return -1;
+        }
+        my $coding_bases = 0;
+        for my $e ( @{ $transcript->get_all_Exons } ) {
+            next unless $e->coding_region_start( $transcript );
+            last if $e->coding_region_end( $transcript ) < $ce;
+            if ( $e->seq_region_start > $ce ) {
+                $coding_bases += $e->coding_region_end( $transcript ) - $e->coding_region_start( $transcript ) + 1;
+            }
+            else {
+                $coding_bases += $e->coding_region_end( $transcript ) - $ce;
+            }            
+        }
+        return $coding_bases % 3;        
+    }    
 }
 
 sub target_transcript_for {
@@ -218,9 +343,67 @@ sub target_transcript_for {
         my $transcript = $design->info->target_transcript;
         $transcript->stable_id;
     } catch {
-        ERROR $_;
+        s/ at .*$//s;
+        WARN $_;        
         undef;
     };
+}
+
+sub gene_ids_for {
+    my ( $design ) = @_;
+
+    my $projects = $design->result_source->storage->dbh_do(
+        sub {
+            $_[1]->selectcol_arrayref( <<'EOT', undef, $design->design_id );
+select distinct mgi_gene.mgi_accession_id
+from mgi_gene
+join project on project.mgi_gene_id = mgi_gene.mgi_gene_id
+where project.design_id = ?
+EOT
+        }
+    );
+
+    return $projects;
+}
+
+sub validated_display_features_for {
+    my $design = shift;
+
+    my $validated_features = $design->search_related(
+        features => {
+            'feature_data_type.description' => 'validated'
+        },
+        {
+            join => {
+                feature_data => 'feature_data_type'
+            }
+        }
+    );
+
+    my $validated_display_features = $validated_features->search_related(
+        display_features => {
+            assembly_id => 11,
+            label       => 'construct'
+        },
+        {
+            prefetch => [
+                {
+                   feature => 'feature_type'
+                },
+                'chromosome',
+            ]
+        }
+    );
+
+    my %display_feature_for;
+
+    while ( my $df = $validated_display_features->next ) {
+        my $type = $df->feature->feature_type->description;
+        die "Multiple $type features\n" if exists $display_feature_for{$type};        
+        $display_feature_for{$type} = $df;
+    }
+
+    return \%display_feature_for;
 }
 
 __END__
