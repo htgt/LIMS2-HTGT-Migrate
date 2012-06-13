@@ -56,5 +56,18 @@ my $sth = $dbh->prepare( join "\nUNION\n", @queries );
 $sth->execute;
 
 while ( my ( $user_name ) = $sth->fetchrow_array ) {
-    print Dump( { user_name => $user_name } );
+    my %d = ( user_name => $user_name );
+    
+    if ( $user_name !~ m/\@/ ) {
+        my $map_to = lc($user_name) . '@sanger.ac.uk';
+        print STDERR "Map $user_name to $map_to [RETURN to accept, or enter a value to change]\n";
+        print STDERR "> ";
+        chomp( my $res = <STDIN> );
+        if ( $res ne '' ) {
+            $map_to = $res;
+        }
+        $d{map_to} = $map_to;
+    }
+
+    print Dump( \%d );
 }
