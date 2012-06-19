@@ -30,19 +30,18 @@ our $USERS_YAML = '/var/tmp/users.yaml';
 {
     
     const my %PLATE_TYPE_FOR => (
-        DESIGN => 'design',
-        EP     => 'ep',
-        EPD    => 'epd',
-        FP     => 'fp',
-        GR     => 'pgs',
-        GRD    => 'pgs',
-        GRQ    => 'dna',
-        PC     => 'pcs',
-        PCS    => 'pcs',
-        PGD    => 'pgs',
-        PGG    => 'dna',
-        REPD   => 'epd',
-        VTP    => 'vtp'
+        DESIGN => 'DESIGN',
+        EP     => 'EP',
+        EPD    => 'EPD',
+        FP     => 'FP',
+        GR     => 'PGS',
+        GRD    => 'PGS',
+        GRQ    => 'DNA',
+        PC     => 'PCS',
+        PCS    => 'PCS',
+        PGD    => 'PGS',
+        PGG    => 'DNA',
+        REPD   => 'EPD',
     );
     
     sub htgt_plate_types {
