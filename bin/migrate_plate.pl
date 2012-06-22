@@ -37,7 +37,7 @@ sub migrate_well {
     # well we're trying to migrate. This means something bad has
     # happened.
     die "Cannot migrate well with null design instance: $htgt_well"
-        unless defined $well->design_instance_id;
+        unless defined $htgt_well->design_instance_id;
     
     my $lims2_well = retrieve_lims2_well( $htgt_well );
     if ( defined $lims2_well ) {
@@ -67,15 +67,17 @@ sub migrate_well {
     INFO( "Migrating well $htgt_well, process $process_type" );
 
     # Create the well
-    my $lims2_well = create_lims2_well( $well_data );
+    $lims2_well = create_lims2_well( $well_data );
 
-    # XXX Load assay data (if any)
+    # XXX TODO: Load assay data (if any)
     
-    # Populate accepted_override flag (if any)
+    # Populate accepted_override flag
     my $accepted_data = build_accepted_data( $htgt_well );
     if ( $accepted_data ) {
         $lims2->POST( 'well', 'accepted_override', $accepted_data );
     }
+
+    return $lims2_well;
 }
 
 sub gateway_2w_or_3w {
@@ -107,7 +109,7 @@ sub rearray_or_recombinase {
 sub retrieve_or_create_lims2_design {
     my $design_id = shift;
 
-    my $desgin = try {
+    my $design = try {
         $lims2->GET( 'design', { id => $design_id } );
     }
     catch {
@@ -115,7 +117,7 @@ sub retrieve_or_create_lims2_design {
         $lims2->POST( 'design', build_design_data( $design_id ) );
     };
 
-    return $desgin;
+    return $design;
 }
 
 sub retrieve_or_create_lims2_plate {
@@ -228,16 +230,18 @@ sub build_plate_data {
 sub build_well_data {
     my ( $well, $parent_well, $process_type ) = @_;
 
+    my $plate = $well->plate;
+    
     my %well_data = (
-        plate_name   => $well->plate->name,
+        plate_name   => $plate->name,
         well_name    => format_well_name( $well->well_name ),
         created_by   => canonical_username( $plate->created_user || 'unknown' ),
         created_at   => parse_oracle_data( $plate->created_date ),
     );
 
-    my %process_data => (
-        input_wells = $parent_well ? [ { plate_name => $parent_well->plate->name, well_name => format_well_name( $parent_well->well_name ) } ]
-                    :                [];
+    my %process_data = (
+        input_wells => $parent_well ? [ { plate_name => $parent_well->plate->name, well_name => format_well_name( $parent_well->well_name ) } ]
+                    :                 []
     );
 
     if ( $process_type eq 'create_di' ) {
@@ -259,7 +263,7 @@ sub build_well_data {
         $process_data{recombinase} = recombinase_for($well);
     }
     elsif ( $process_type eq '3w_gateway' ) {
-        my ( $casette, $backbone ) = cassette_backbone_transition( $parent_well, $well );
+        my ( $cassette, $backbone ) = cassette_backbone_transition( $parent_well, $well );
         $process_data{cassette} = $cassette;
         $process_data{backbone} = $backbone;
         $process_data{recombinase} = recombinase_for($well);
@@ -317,7 +321,7 @@ sub bacs_for {
 
     my @bacs;
 
-    for my $di_bac ( $di->design_instance_bacs ) {
+    for my $di_bac ( $well->design_instance->design_instance_bacs ) {
         next unless defined $di_bac->bac_plate;        
         my $bac = $di_bac->bac;
         push @bacs, {
