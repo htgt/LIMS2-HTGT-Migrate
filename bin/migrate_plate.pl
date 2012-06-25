@@ -4,7 +4,7 @@ use strict;
 use warnings FATAL => 'all';
 
 use LIMS2::REST::Client;
-use LIMS2::HTGT::Migrate::Utils qw( trim format_well_name format_bac_library parse_oracle_date canonical_username );
+use LIMS2::HTGT::Migrate::Utils qw( trim format_well_name format_bac_library canonical_datetime canonical_username );
 use LIMS2::HTGT::Migrate::Design qw( get_design_data );
 use HTGT::DBFactory;
 use Log::Log4perl qw( :easy );
@@ -74,7 +74,7 @@ sub migrate_well {
     # Populate accepted_override flag
     my $accepted_data = build_accepted_data( $htgt_well );
     if ( $accepted_data ) {
-        $lims2->POST( 'well', 'accepted_override', $accepted_data );
+        $lims2->POST( 'well', 'accepted', $accepted_data );
     }
 
     return $lims2_well;
@@ -107,13 +107,14 @@ sub rearray_or_recombinase {
 }
 
 sub retrieve_or_create_lims2_design {
-    my $design_id = shift;
-
+    my $design_id = shift;    
+    
     my $design = try {
         $lims2->GET( 'design', { id => $design_id } );
     }
     catch {
         $_->throw() unless $_->not_found;
+        INFO( "Creating design $design_id" );
         $lims2->POST( 'design', build_design_data( $design_id ) );
     };
 
@@ -145,6 +146,7 @@ sub retrieve_lims2_plate {
 sub create_lims2_plate {
     my $plate_data = shift;
 
+    INFO( "Creating plate $plate_data->{name}, type $plate_data->{type}" );
     my $lims2_plate = $lims2->POST( 'plate', $plate_data );
 
     return $lims2_plate;
@@ -170,6 +172,7 @@ sub retrieve_lims2_well {
 sub create_lims2_well {
     my $well_data = shift;
 
+    INFO( "Creating well $well_data->{plate_name}\[$well_data->{well_name}\], process type $well_data->{process_data}{type}" );
     my $lims2_well = $lims2->POST( 'well', $well_data );
 
     return $lims2_well;    
@@ -193,8 +196,8 @@ sub build_accepted_data {
     return {
         plate_name => $well->plate->name,
         well_name  => format_well_name( $well->well_name ),
-        created_by => canonical_username( $well_data->edit_user ),
-        created_at => parse_oracle_date( $well_data->edit_date ),
+        created_by => canonical_username( $well_data->edit_user || 'unknown' ),
+        created_at => canonical_datetime( $well_data->edit_date ),
         accepted   => $well_data->data_value eq 'yes' ? 1 : 0
     };
 }
@@ -206,7 +209,7 @@ sub build_plate_data {
         name        => $plate->name,
         type        => lims2_plate_type( $plate ),
         created_by  => canonical_username( $plate->created_user || 'unknown' ),
-        created_at  => parse_oracle_date( $plate->created_date )
+        created_at  => canonical_datetime( $plate->created_date )
     );
 
     my $desc = trim( $plate->description );
@@ -214,13 +217,13 @@ sub build_plate_data {
         $plate_data{description} = $desc;
     }    
 
-    for my $c ( $plate->comments ) {
+    for my $c ( $plate->plate_comments ) {
         my $comment_text = trim( $c->plate_comment );
         next unless length $comment_text;
         push @{ $plate_data{comments} }, {
             comment_text => $comment_text,
-            created_by   => canonical_username( $c->created_user || 'unknown' ),
-            created_at   => parse_oracle_date( $c->created_date )                
+            created_by   => canonical_username( $c->edit_user || 'unknown' ),
+            created_at   => canonical_datetime( $c->edit_date )                
         };
     }
 
@@ -236,10 +239,11 @@ sub build_well_data {
         plate_name   => $plate->name,
         well_name    => format_well_name( $well->well_name ),
         created_by   => canonical_username( $plate->created_user || 'unknown' ),
-        created_at   => parse_oracle_data( $plate->created_date ),
+        created_at   => canonical_datetime( $plate->created_date ),
     );
 
     my %process_data = (
+        type        => $process_type,
         input_wells => $parent_well ? [ { plate_name => $parent_well->plate->name, well_name => format_well_name( $parent_well->well_name ) } ]
                     :                 []
     );
@@ -255,10 +259,10 @@ sub build_well_data {
     elsif ( $process_type eq '2w_gateway' ) {
         my ( $cassette, $backbone ) = cassette_backbone_transition( $parent_well, $well );
         if ( $cassette ) {
-            $process_data{cassette} = 'cassette';
+            $process_data{cassette} = $cassette;
         }
         else {
-            $process_data{backbone} = 'backbone';
+            $process_data{backbone} = $backbone;
         }
         $process_data{recombinase} = recombinase_for($well);
     }
@@ -292,7 +296,7 @@ sub cassette_backbone_transition {
     my $parent_backbone = backbone_for( $parent_well )
         or die "Failed to determine backbone for $parent_well";
 
-    my $child_cassette = casette_for( $child_well )
+    my $child_cassette = cassette_for( $child_well )
         or die "Failed to determine cassette for $child_well";
 
     my $child_backbone = backbone_for( $child_well )
@@ -382,37 +386,31 @@ sub lims2_plate_type {
             EP => sub { 'electroporation' }
         },
         EP => {
-            ESCLONE  => sub { 'colony_pick' }, # EPD in HTGT
-            ESCLONEP => sub { 'colony_pool' },
+            EP_PICK => sub { 'colony_pick' }, # EPD in HTGT
+            #EP_POOL => sub { 'colony_pool' }, # new
+            XEP     => sub { 'recombinase' }, # Flp excision
         },
-        ESCLONE => {
+        EP_PICK => {
             FP => sub { 'freeze' }
         },
-        ESCLONEP => {
-            ESCLONEX => sub { 'recombinase' }, # Flp excision            
+        XEP => {
+            XEP_POOL  => sub { 'colony_pool' },
+            SEP       => sub { 'electroporation' }
         },
-        ESCLONEX => {
-            FP => sub { 'freeze' },
-            EP2 => sub { 'electroporation' }
+        SEP => {
+            SEP_PICK => sub { 'colony_pick' },
+            SEP_POOL => sub { 'colony_pool' },
         },
-        EP2 => {
-            ESCLONE2  => sub { 'colony_pick' },
-            ESCLONEP2 => sub { 'colony_pool' },
+        SEP_PICK => {
+            SFP => sub { 'freeze' }
         },
-        ESCLONE2 => {
-            FP => sub { 'freeze' }
-        },
-        ESCLONEP2 => {
-            FP => sub { 'freeze' }
-        }
-            
     );
     
     sub process_type_for {
         my ( $parent_well, $child_well ) = @_;
         
-        my $parent_type = $parent_well ? lims2_plate_type( $parent_well->plate->type ) : 'ROOT';
-        my $child_type  = lims2_plate_type( $child_well->plate->type );
+        my $parent_type = $parent_well ? lims2_plate_type( $parent_well->plate ) : 'ROOT';
+        my $child_type  = lims2_plate_type( $child_well->plate );
 
         my $handler = $HANDLER_FOR_TRANSITION{$parent_type}{$child_type}
             or die "No process configured for transition from $parent_type to $child_type";
@@ -428,7 +426,7 @@ sub lims2_plate_type {
     sub cassette_for {
         my $well = shift;
         
-        my $plate_type = lims2_plate_type( $well->plate->type );
+        my $plate_type = lims2_plate_type( $well->plate );
         
         if ( $plate_type eq 'DESIGN' ) {
             return;
@@ -452,12 +450,12 @@ sub lims2_plate_type {
 }
 
 {
-    const my $DEFAULT_BACKBONE => 'R3R4_pBR_DTA+_Bsd_amp';
+    const my $DEFAULT_BACKBONE => 'R3R4_pBR_amp';
 
     sub backbone_for {
         my $well = shift;
 
-        my $plate_type = lims2_plate_type( $well->plate->type );
+        my $plate_type = lims2_plate_type( $well->plate );
         if ( $plate_type eq 'DESIGN' ) {
             return;
         }
@@ -504,7 +502,7 @@ sub recombinase_for {
 
     $htgt = HTGT::DBFactory->connect( 'eucomm_vector' );
 
-    $lims2 = LIMS2::REST::Client->new();
+    $lims2 = LIMS2::REST::Client->new_with_config();
 
     my $plate_name = shift @ARGV;
 
