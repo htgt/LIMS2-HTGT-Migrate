@@ -15,6 +15,7 @@ use Sub::Exporter -setup => {
               parse_oracle_date
               sponsor2pipeline
               canonical_username
+              canonical_datetime
       )
     ]
 };
@@ -137,6 +138,15 @@ sub parse_oracle_date {
     };        
 
     return $date;
+}
+
+sub canonical_datetime {
+    my $date = shift;
+
+    my $datetime = parse_oracle_date( $date )
+        or return undef;
+
+    return $datetime->iso8601;
 }
 
 sub trim {
