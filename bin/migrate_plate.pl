@@ -77,7 +77,11 @@ sub migrate_well {
     $lims2_well = create_lims2_well( $well_data );
 
     # XXX TODO: Load assay data (if any)
-    
+    #my $assay_data = assay_data_for( $htgt_well, $process_type );
+    #if ( $asasy_data ) {
+    #    $lims->POST( 'well', 'assay', $assay_data );
+    #}
+
     # Populate accepted_override flag
     my $accepted_data = build_accepted_data( $htgt_well );
     if ( $accepted_data ) {
@@ -508,11 +512,74 @@ sub recombinase_for {
 }
 
 {
-    my %log4perl = (
-        level  => $WARN,
-        layout => '%d %p %x %m%n'
+    my %ASSAY_DATA_HANDLER = (
+        DESIGN => \&recombineering_assays_for,
+        PCS    => \&sequencing_assays_for,
+        PC     => \&sequencing_assays_for,
+        PG     => \&sequencing_assays_for,
+        PGD    => \&sequencing_assays_for,
+        GR     => \&sequencing_assays_for,
+        GRQ    => \&sequencing_assays_for,        
+        GRD    => \&dna_assays_for,
+        PGG    => \&dna_assays_for,        
+    );
+    
+    sub assay_data_for {
+        my ( $htgt_well ) = @_;
+
+        my $plate_type = $htgt_well->plate->type;        
+        
+        return unless exists $ASSAY_DATA_HANDLER{$plate_type};
+
+        return $ASSAY_DATA_HANDLER{$plate_type}->($htgt_well);
+    }
+}
+
+sub recombineering_assays_for {
+    my $htgt_well = shift;
+
+    return assays_from_well_data( $htgt_well, qw( pcr_u pcr_d pcr_g rec_u rec_d rec_g rec_ns rec-result ) );                               
+}
+
+sub dna_assays_for {
+    my $htgt_well = shift;
+
+    return assays_from_well_data( $htgt_well, qw( DNA_STATUS DNA_QUALITY DNA_QUALITY_COMMENTS ) );
+}
+
+sub assays_from_well_data {
+    my ( $htgt_well, @data_types ) = @_;
+
+    my $rs = $htgt_well->search_related_rs(
+        well_data => {
+            data_type => { -in => \@data_types }
+        }
     );
 
+    my @assays = map { well_data_to_assay( $_ ) } $rs->all;
+
+    return \@assays;
+}
+
+sub well_data_to_assay {
+    my ( $well_data ) = @_;
+
+    ( my $type = lc $well_data->{data_type} ) =~ s/[\s-]+/_/g;
+
+    return {
+        type       => $type,
+        value      => $well_data->data_value,
+        created_at => canonical_datetime( $well_data->edit_date ),
+        created_by => canonical_username( $assay->edit_user )
+    }
+}
+
+{    
+    my %log4perl = (
+        level  => $WARN,        
+        layout => '%d %p %x %m%n'
+    );
+    
     GetOptions(
         'trace'   => sub { $log4perl{level} = $TRACE },
         'debug'   => sub { $log4perl{level} = $DEBUG },
@@ -537,4 +604,3 @@ sub recombinase_for {
     
     migrate_plate( $plate );
 }
-
