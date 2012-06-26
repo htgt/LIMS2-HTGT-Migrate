@@ -24,9 +24,16 @@ sub migrate_plate {
     my $lims2_plate = retrieve_or_create_lims2_plate( $plate );
 
     for my $well ( $plate->wells ) {
-        next unless defined $well->design_instance_id; # skip empty wells         
-        migrate_well( $lims2_plate, $well );
-    }
+        next unless defined $well->design_instance_id; # skip empty wells
+        Log::Log4perl::NDC->push( "$well" );
+        try {
+            migrate_well( $lims2_plate, $well );
+        }
+        catch {
+            ERROR( $_ );            
+        };
+        Log::Log4perl::NDC->pop;        
+    }    
 }
 
 sub migrate_well {
@@ -80,30 +87,40 @@ sub migrate_well {
     return $lims2_well;
 }
 
-sub gateway_2w_or_3w {
-    my ( $parent_well, $child_well ) = @_;
+sub compute_process_type {
+    my ( @expected_types ) = @_;
 
-    my ( $cassette, $backbone ) = cassette_backbone_transition( $parent_well, $child_well );
+    return sub {
+        my ( $parent_well, $child_well ) = @_;        
     
-    if ( $cassette and not $backbone ) {
-        return '2w_gateway';
-    }
+        my ( $cassette, $backbone ) = cassette_backbone_transition( $parent_well, $child_well );
 
-    if ( $backbone and not $cassette ) {        
-        return '2w_gateway';
-    }
+        my $process_type;
+    
+        if ( $cassette and not $backbone ) {
+            $process_type = '2w_gateway';
+        }
+        elsif ( $backbone and not $cassette ) {
+            $process_type = '2w_gateway';
+        }
+        elsif ( $cassette and $backbone ) {
+            $process_type = '3w_gateway';
+        }
+        elsif ( @{ recombinase_for( $child_well ) } > 0 ) {
+            $process_type = 'recombinase';
+        }
+        else {
+            $process_type = 'rearray';
+        }
 
-    if ( $cassette and $backbone ) {
-        return '3w_gateway';
-    }
-
-    die "Expected gateway process, but $parent_well and $child_well have the same cassette and backbone";    
-}
-
-sub rearray_or_recombinase {
-    my $well = shift;
-
-    return @{ recombinase_for($well) } > 0 ? 'recombinase' : 'rearray';
+        for my $expected ( @expected_types ) {
+            if ( $process_type eq $expected ) {
+                return $process_type;
+            }
+        }
+    
+        die "Computed process type $process_type was not one of " . join( q{,}, @expected_types ) . "\n";
+    };    
 }
 
 sub retrieve_or_create_lims2_design {
@@ -375,11 +392,15 @@ sub lims2_plate_type {
         },
         INT => {
             INT     => sub { 'rearray' },
-            POSTINT => \&gateway_2w_or_3w,
-            FINAL   => \&gateway_2w_or_3w
+            POSTINT => compute_process_type( qw( 2w_gateway 3w_gateway ) ),
+            FINAL   => compute_process_type( qw( 2w_gateway 3w_gateway ) ),
+        },
+        POSTINT => {
+            POSTINT => compute_process_type( qw( 2w_gateway recombinase rearray ) ),
+            FINAL   => compute_process_type( qw( 2w_gateway recombinase ) )
         },
         FINAL => {
-            FINAL   => \&rearray_or_recombinase,
+            FINAL   => compute_process_type( qw( recombinase rearray ) ),
             DNA     => sub { 'dna_prep' }
         },
         DNA => {
@@ -412,10 +433,11 @@ sub lims2_plate_type {
         my $parent_type = $parent_well ? lims2_plate_type( $parent_well->plate ) : 'ROOT';
         my $child_type  = lims2_plate_type( $child_well->plate );
 
-        my $handler = $HANDLER_FOR_TRANSITION{$parent_type}{$child_type}
-            or die "No process configured for transition from $parent_type to $child_type";
-
-        return $handler->( $parent_well, $child_well );
+        die "No process configured for transition from $parent_type to $child_type"
+            unless exists $HANDLER_FOR_TRANSITION{$parent_type}
+                and exists $HANDLER_FOR_TRANSITION{$parent_type}{$child_type};
+        
+        return $HANDLER_FOR_TRANSITION{$parent_type}{$child_type}->( $parent_well, $child_well );
     }
 }
 
@@ -480,15 +502,15 @@ sub lims2_plate_type {
 sub recombinase_for {
     my $well = shift;
 
-    my %data = map { $_->data_type => $_->data_value } $well->plate->plate_data, $well->well_data;
+    my %data = map { lc $_->data_type => $_->data_value } $well->plate->plate_data, $well->well_data;
 
-    return [ grep { $data{$_} } qw( apply_cre apply_flp apply_dre ) ];
+    return [ grep { $data{ 'apply_' . lc $_ } } qw( Cre Flp Dre ) ];
 }
 
 {
     my %log4perl = (
         level  => $WARN,
-        layout => '%d %p %m%n'
+        layout => '%d %p %x %m%n'
     );
 
     GetOptions(
