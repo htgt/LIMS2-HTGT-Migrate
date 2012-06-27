@@ -14,6 +14,8 @@ use Try::Tiny;
 use HTTP::Status qw( :constants );
 use Getopt::Long;
 
+const my @RECOMBINASE => qw( Cre Flp Dre );
+
 my ( $htgt, $lims2 );
 
 sub migrate_plate {
@@ -503,12 +505,33 @@ sub lims2_plate_type {
     }    
 }
 
-sub recombinase_for {
+sub plate_well_data {
     my $well = shift;
 
     my %data = map { lc $_->data_type => $_->data_value } $well->plate->plate_data, $well->well_data;
 
-    return [ grep { $data{ 'apply_' . lc $_ } } qw( Cre Flp Dre ) ];
+    return \%data;
+}
+
+sub recombinase_for {
+    my $well = shift;
+
+    my $parent_well = $well->parent_well
+        or return []; # Cannot apply recombinase without a parent well
+    
+    my $parent_data = plate_well_data( $parent_well );
+    my $data        = plate_well_data( $well );
+
+    my @recombinase_for;
+    
+    for my $r ( @RECOMBINASE ) {
+        my $data_type = 'apply_' . lc $r;
+        if ( $data->{$data_type} and not $parent_data->{$data_type} ) {
+            push @recombinase_for, $r;
+        }
+    }
+
+    return \@recombinase_for;
 }
 
 {
@@ -570,7 +593,7 @@ sub well_data_to_assay {
         type       => $type,
         value      => $well_data->data_value,
         created_at => canonical_datetime( $well_data->edit_date ),
-        created_by => canonical_username( $assay->edit_user )
+        created_by => canonical_username( $well_data->edit_user )
     }
 }
 
