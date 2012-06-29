@@ -75,16 +75,10 @@ sub migrate_well {
 
     INFO( "Migrating well $htgt_well, process $process_type" );
 
-    # Create the well
     $lims2_well = create_lims2_well( $well_data );
+   
+    load_assay_data( $htgt_well, $process_type );
 
-    # XXX TODO: Load assay data (if any)
-    #my $assay_data = assay_data_for( $htgt_well, $process_type );
-    #if ( $asasy_data ) {
-    #    $lims->POST( 'well', 'assay', $assay_data );
-    #}
-
-    # Populate accepted_override flag
     my $accepted_data = build_accepted_data( $htgt_well );
     if ( $accepted_data ) {
         $lims2->POST( 'well', 'accepted', $accepted_data );
@@ -199,6 +193,15 @@ sub create_lims2_well {
     my $lims2_well = $lims2->POST( 'well', $well_data );
 
     return $lims2_well;    
+}
+
+sub create_lims2_well_assay {
+    my ( $type, $assay ) = @_;
+
+    INFO( "Creating well assay $type for well $assay->{plate_name}\[$assay->{well_name}\]" );
+    my $lims2_asasy = $lims2->POST( 'well', $type, $assay );
+
+    return $assay;
 }
 
 sub build_design_data {
@@ -536,19 +539,19 @@ sub recombinase_for {
 
 {
     my %ASSAY_DATA_HANDLER = (
-        DESIGN => \&recombineering_assays_for,
-        PCS    => \&sequencing_assays_for,
-        PC     => \&sequencing_assays_for,
-        PG     => \&sequencing_assays_for,
-        PGD    => \&sequencing_assays_for,
-        GR     => \&sequencing_assays_for,
-        GRQ    => \&sequencing_assays_for,        
-        GRD    => \&dna_assays_for,
-        PGG    => \&dna_assays_for,        
+        DESIGN => \&load_recombineering_assays,
+        PCS    => \&load_sequencing_assays,
+        PC     => \&load_sequencing_assays,
+        PG     => \&load_sequencing_assays,
+        PGD    => \&load_sequencing_assays,
+        GR     => \&load_sequencing_assays,
+        GRQ    => \&load_sequencing_assays,        
+        GRD    => \&load_dna_assays,
+        PGG    => \&load_dna_assays,        
     );
-    
-    sub assay_data_for {
-        my ( $htgt_well ) = @_;
+
+    sub load_assay_data {
+        my ( $htgt_well, $process_type ) = @_;
 
         my $plate_type = $htgt_well->plate->type;        
         
@@ -558,45 +561,63 @@ sub recombinase_for {
     }
 }
 
-sub recombineering_assays_for {
+sub load_recombineering_assays {
     my $htgt_well = shift;
 
-    return assays_from_well_data( $htgt_well, qw( pcr_u pcr_d pcr_g rec_u rec_d rec_g rec_ns rec-result ) );                               
-}
+    my %well_data = map { $_->data_type => $_ } $htgt_well->well_data;
 
-sub dna_assays_for {
-    my $htgt_well = shift;
-
-    return assays_from_well_data( $htgt_well, qw( DNA_STATUS DNA_QUALITY DNA_QUALITY_COMMENTS ) );
-}
-
-sub assays_from_well_data {
-    my ( $htgt_well, @data_types ) = @_;
-
-    my $rs = $htgt_well->search_related_rs(
-        well_data => {
-            data_type => { -in => \@data_types }
-        }
-    );
-
-    my @assays = map { well_data_to_assay( $_ ) } $rs->all;
-
-    return \@assays;
-}
-
-sub well_data_to_assay {
-    my ( $well_data ) = @_;
-
-    ( my $type = lc $well_data->{data_type} ) =~ s/[\s-]+/_/g;
-
-    return {
-        type       => $type,
-        value      => $well_data->data_value,
-        created_at => canonical_datetime( $well_data->edit_date ),
-        created_by => canonical_username( $well_data->edit_user )
+    for my $wd ( map { $well_data{$_} or () } qw( pcr_u pcr_d pcr_g rec_u rec_d rec_g rec_ns rec-result ) ) {
+        ( my $type = lc $wd->{data_type} ) =~ s/[\s-]+/_/g;
+        my $assay = common_assay_data( $htgt_well, $wd );
+        $assay->{result_type} = $type;
+        $assay->{result} = $wd->data_value;
+        create_lims2_assay( 'recombineering_result', $assay );
     }
 }
 
+sub load_dna_assays {
+    my $htgt_well = shift;
+
+    my %well_data = map { $_->data_type => $_ } $htgt_well->well_data;
+
+    if ( my $dna_status = $well_data{DNA_STATUS} ) {
+        my $assay = common_assay_data( $htgt_well, $dna_status );
+        if ( $dna_status->data_value and $dna_status->data_value eq 'pass' ) {
+            $assay->{pass} = 1;
+        }
+        else {
+            $assay->{pass} = 0;
+        }
+        create_lims2_assay( 'dna_status', $assay );
+    }
+
+    if ( my $dna_quality = $well_data{DNA_QUALITY} ) {
+        my $assay = common_assay_data( $htgt_well, $dna_quality );
+        $assay->{quality} = $dna_quality->data_value;
+        if ( my $dna_quality_comment = $well_data{DNA_QUALITY_COMMENTS} ) {
+            $assay->{comment_text} = $dna_quality_comment->data_value;
+        }
+        create_lims2_assay( 'dna_quality', $assay );
+    }
+}
+
+sub load_sequencing_assays {
+    my $htgt_well = shift;
+
+    # XXX TODO    
+}
+
+sub common_assay_data {
+    my ( $well, $well_data ) = @_;
+
+    return {
+        plate_name  => $well->plate->name,
+        well_name   => format_well_name( $well->well_name ),
+        created_at  => canonical_datetime( $well_data->edit_date ),
+        created_by  => canonical_username( $well_data->edit_user )
+    }
+}
+            
 {    
     my %log4perl = (
         level  => $WARN,        
