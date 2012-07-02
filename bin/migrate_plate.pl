@@ -7,6 +7,7 @@ use LIMS2::REST::Client;
 use LIMS2::HTGT::Migrate::Utils qw( trim format_well_name format_bac_library canonical_datetime canonical_username );
 use LIMS2::HTGT::Migrate::Design qw( get_design_data );
 use HTGT::DBFactory;
+use Iterator::Simple qw( iter imap );
 use Log::Log4perl qw( :easy );
 use Const::Fast;
 use Data::Dump qw( pp );
@@ -18,19 +19,23 @@ const my @RECOMBINASE => qw( Cre Flp Dre );
 
 my ( $htgt, $lims2, $qc_schema );
 
-my ( $attempted, $migrated ) = ( 0, 0 );
-
 sub migrate_plate {
     my $plate = shift;
 
     DEBUG( "Migrating plate $plate" );
 
-    my $lims2_plate = retrieve_or_create_lims2_plate( $plate );
+    my ( $attempted, $migrated ) = ( 0, 0 );
+
+    my $lims2_plate = try {
+        retrieve_or_create_lims2_plate( $plate )
+    };
+    
+    return unless $lims2_plate;
 
     for my $well ( $plate->wells ) {
         next unless defined $well->design_instance_id; # skip empty wells
         $attempted++;
-        Log::Log4perl::NDC->push( "$well" );
+        Log::Log4perl::NDC->push( $well->well_name );
         try {
             migrate_well( $lims2_plate, $well );
             $migrated++;
@@ -38,10 +43,12 @@ sub migrate_plate {
         catch {
             ERROR( $_ );            
         };
-        Log::Log4perl::NDC->pop;        
+        Log::Log4perl::NDC->pop;
     }
 
     INFO( "Successfully migrated $migrated of $attempted wells" );
+
+    return ( $attempted, $migrated );
 }
 
 sub migrate_well {
@@ -712,7 +719,7 @@ sub common_assay_data {
         'debug'   => sub { $log4perl{level} = $DEBUG },
         'verbose' => sub { $log4perl{level} = $INFO },
         'log=s'   => sub { $log4perl{file}  = '>>' . $_[1] },
-    ) and @ARGV == 1 or die "Usage: $0 [OPTIONS] PLATE_NAME\n";
+    ) or die "Usage: $0 [OPTIONS] [PLATE_NAME ...]\n";
 
     Log::Log4perl->easy_init( \%log4perl );
 
@@ -722,14 +729,28 @@ sub common_assay_data {
 
     $lims2 = LIMS2::REST::Client->new_with_config();
 
-    my $plate_name = shift @ARGV;
+    my $todo = @ARGV ? iter( @ARGV ) : imap { chomp; $_ } iter( \*STDIN );    
 
-    my $plate = $htgt->resultset( 'Plate' )->find( { name => $plate_name } )
-        or die "Failed to retrieve plate $plate_name\n";
-
-    if ( $plate->type eq 'VTP' ) {
-        die "Refusing to migrate vector template plate\n";
-    }
+    my ( $total_attempted, $total_migrated ) = ( 0, 0 );    
     
-    migrate_plate( $plate );
+    while ( my $plate_name = $todo->next ) {
+        Log::Log4perl::NDC->push( $plate_name );
+        my $plate = $htgt->resultset( 'Plate' )->find( { name => $plate_name } );
+        if ( ! $plate ) {
+            ERROR( "Failed to retrieve plate $plate_name" );
+            next;            
+        }
+        if ( $plate->type eq 'VTP' ) {
+            WARN( "Refusing to migrate vector template plate" );
+            next;
+        }
+        my ( $attempted, $migrated ) = migrate_plate( $plate );
+        $total_attempted += $attempted;
+        $total_migrated  += $migrated;
+    }    
+    continue {
+        Log::Log4perl::NDC->pop;
+    }    
+    
+    INFO( "Successfully migrated $total_migrated of $total_attempted wells" );    
 }
