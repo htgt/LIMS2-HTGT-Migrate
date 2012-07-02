@@ -16,7 +16,9 @@ use Getopt::Long;
 
 const my @RECOMBINASE => qw( Cre Flp Dre );
 
-my ( $htgt, $lims2 );
+my ( $htgt, $lims2, $qc_schema );
+
+my ( $attempted, $migrated ) = ( 0, 0 );
 
 sub migrate_plate {
     my $plate = shift;
@@ -27,15 +29,19 @@ sub migrate_plate {
 
     for my $well ( $plate->wells ) {
         next unless defined $well->design_instance_id; # skip empty wells
+        $attempted++;
         Log::Log4perl::NDC->push( "$well" );
         try {
             migrate_well( $lims2_plate, $well );
+            $migrated++;
         }
         catch {
             ERROR( $_ );            
         };
         Log::Log4perl::NDC->pop;        
-    }    
+    }
+
+    INFO( "Successfully migrated $migrated of $attempted wells" );
 }
 
 sub migrate_well {
@@ -76,7 +82,8 @@ sub migrate_well {
     INFO( "Migrating well $htgt_well, process $process_type" );
 
     $lims2_well = create_lims2_well( $well_data );
-   
+
+    
     load_assay_data( $htgt_well, $process_type );
 
     my $accepted_data = build_accepted_data( $htgt_well );
@@ -557,30 +564,28 @@ sub recombinase_for {
         
         return unless exists $ASSAY_DATA_HANDLER{$plate_type};
 
-        return $ASSAY_DATA_HANDLER{$plate_type}->($htgt_well);
+        my %well_data = map { $_->data_type => $_ } $htgt_well->well_data;
+
+        return $ASSAY_DATA_HANDLER{$plate_type}->($htgt_well, \%well_data);
     }
 }
 
 sub load_recombineering_assays {
-    my $htgt_well = shift;
+    my ( $htgt_well, $well_data ) = @_;
 
-    my %well_data = map { $_->data_type => $_ } $htgt_well->well_data;
-
-    for my $wd ( map { $well_data{$_} or () } qw( pcr_u pcr_d pcr_g rec_u rec_d rec_g rec_ns rec-result ) ) {
-        ( my $type = lc $wd->{data_type} ) =~ s/[\s-]+/_/g;
+    for my $wd ( map { $well_data->{$_} or () } qw( pcr_u pcr_d pcr_g rec_u rec_d rec_g rec_ns rec-result ) ) {
+        ( my $type = lc $wd->data_type ) =~ s/[\s-]+/_/g;
         my $assay = common_assay_data( $htgt_well, $wd );
         $assay->{result_type} = $type;
         $assay->{result} = $wd->data_value;
-        create_lims2_assay( 'recombineering_result', $assay );
+        create_lims2_well_assay( 'recombineering_result', $assay );
     }
 }
 
 sub load_dna_assays {
-    my $htgt_well = shift;
+    my ( $htgt_well, $well_data ) = @_;
 
-    my %well_data = map { $_->data_type => $_ } $htgt_well->well_data;
-
-    if ( my $dna_status = $well_data{DNA_STATUS} ) {
+    if ( my $dna_status = $well_data->{DNA_STATUS} ) {
         my $assay = common_assay_data( $htgt_well, $dna_status );
         if ( $dna_status->data_value and $dna_status->data_value eq 'pass' ) {
             $assay->{pass} = 1;
@@ -588,23 +593,101 @@ sub load_dna_assays {
         else {
             $assay->{pass} = 0;
         }
-        create_lims2_assay( 'dna_status', $assay );
+        create_lims2_well_assay( 'dna_status', $assay );
     }
 
-    if ( my $dna_quality = $well_data{DNA_QUALITY} ) {
+    if ( my $dna_quality = $well_data->{DNA_QUALITY} ) {
         my $assay = common_assay_data( $htgt_well, $dna_quality );
         $assay->{quality} = $dna_quality->data_value;
-        if ( my $dna_quality_comment = $well_data{DNA_QUALITY_COMMENTS} ) {
+        if ( my $dna_quality_comment = $well_data->{DNA_QUALITY_COMMENTS} ) {
             $assay->{comment_text} = $dna_quality_comment->data_value;
         }
-        create_lims2_assay( 'dna_quality', $assay );
+        create_lims2_well_assay( 'dna_quality', $assay );
     }
 }
 
 sub load_sequencing_assays {
-    my $htgt_well = shift;
+    my ( $htgt_well, $well_data ) = @_;
 
-    # XXX TODO    
+    my $assay;
+    
+    if ( $well_data->{new_qc_test_result_id} ) {
+        $assay = get_new_qc_assay( $htgt_well, $well_data );
+    }
+    elsif ( $well_data->{qctest_result_id} ) {
+        $assay = get_old_qc_assay( $htgt_well, $well_data );
+    }
+    else {
+        return;
+    }    
+
+    create_lims2_well_assay( 'qc_sequencing_result', $assay );
+    
+    return;
+}
+
+sub get_new_qc_assay {
+    my ( $well, $well_data ) = @_;
+
+    my $tr_well_data = $well_data->{new_qc_test_result_id};
+
+    my $assay = common_assay_data( $well, $tr_well_data );
+
+    my $result_id = $tr_well_data->data_value;
+
+    $assay->{test_result_url} = 'http://www.sanger.ac.uk/htgt/newqc/view_result/' . $result_id;
+
+    if ( $well_data->{valid_primers} and $well_data->{valid_primers}->data_value ) {        
+        $assay->{valid_primers} = $well_data->{valid_primers}->data_value;
+    }
+
+    if ( $well_data->{pass_level} and $well_data->{pass_level}->data_value eq 'pass' ) {
+        $assay->{pass} = 1;
+    }
+
+    if ( $well_data->{mixed_reads} and $well_data->{mixed_reads}->data_value eq 'yes' ) {
+        $assay->{mixed_reads} = 1;
+    }
+
+    return $assay;
+}
+
+sub get_old_qc_assay {
+    my ( $well, $well_data ) = @_;
+
+    my $qctest_well_data = $well_data->{qctest_result_id};
+
+    my $assay = common_assay_data( $well, $qctest_well_data );
+    
+    my $qctest_result_id = $qctest_well_data->data_value;
+
+    $assay->{test_result_url} = 'http://www.sanger.ac.uk/htgt/qc/qctest_result_view?qctest_result_id=' . $qctest_result_id;
+
+    # XXX This conversion of pass level to boolean might be too naive
+    if ( $well_data->{pass_level} and $well_data->{pass_level}->data_value =~ m/pass/ ) {
+        $assay->{pass} = 1;        
+    }
+
+    my $qctest_result = $qc_schema->resultset( 'QctestResult' )->find(
+        {
+            qctest_result_id => $qctest_result_id
+        }
+    ) or return $assay;
+
+    my %valid_primers;
+    
+    foreach my $primer ( $qctest_result->qctestPrimers ) {
+        my $seq_align_feature = $primer->seqAlignFeature
+            or next;
+        my $loc_status = $seq_align_feature->loc_status
+            or next;
+        $valid_primers{ uc( $primer->primer_name ) } = 1
+            if $loc_status eq 'ok';
+    }
+    
+    $assay->{valid_primers} = join q{,}, sort keys %valid_primers;
+
+    return $assay;
 }
 
 sub common_assay_data {
@@ -614,7 +697,7 @@ sub common_assay_data {
         plate_name  => $well->plate->name,
         well_name   => format_well_name( $well->well_name ),
         created_at  => canonical_datetime( $well_data->edit_date ),
-        created_by  => canonical_username( $well_data->edit_user )
+        created_by  => canonical_username( $well_data->edit_user || 'unknown' )
     }
 }
             
@@ -634,6 +717,8 @@ sub common_assay_data {
     Log::Log4perl->easy_init( \%log4perl );
 
     $htgt = HTGT::DBFactory->connect( 'eucomm_vector' );
+
+    $qc_schema = HTGT::DBFactory->connect( 'vector_qc' );    
 
     $lims2 = LIMS2::REST::Client->new_with_config();
 
