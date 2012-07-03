@@ -389,15 +389,22 @@ sub lims2_plate_type {
         return 'INT';
     }
 
-    if ( ( $plate->plate_data_value( 'final_vectors' ) || 'no' ) eq 'yes' ) {
-        return 'FINAL';
-    }
-
-    if ( $plate->type eq 'GR' or $plate->type eq 'GRD' or $plate->type eq 'PGD' ) {
-        return 'POSTINT';
-    }
-
-    if ( $plate->type eq 'GRQ' or $plate->type eq 'PGG' ) {
+    if ( $plate->type eq 'PGD' or $plate->type eq 'GR' or $plate->type eq 'GRQ' ) {
+        my @queue = ( $plate );
+        while ( @queue ) {
+            my $pplate = shift @queue;        
+            if ( ( $pplate->plate_data_value( 'final_vectors' ) || 'no' ) eq 'yes' ) {
+                return 'FINAL';
+            }
+            my %parent_plates = map { $_->plate_id => $_ }
+                map { $_->parent_well_id ? $_->parent_well->plate : () }
+                    $pplate->wells;
+            push @queue, grep { $_->type eq 'PGD' or $_->type eq 'GR' or $_->type eq 'GRQ' } values %parent_plates;
+        }
+        return 'POSTINT';        
+    }    
+    
+    if ( $plate->type eq 'GRD' or $plate->type eq 'PGG' ) {
         return 'DNA';
     }
 
@@ -510,12 +517,12 @@ sub lims2_plate_type {
             return $backbone;
         }
 
-        if ( $plate_type eq 'INT' ) {
-            return $DEFAULT_BACKBONE;
-        }
-
         if ( $well->parent_well_id ) {
-            return backbone_for( $well->parent_well );
+            my $parent_well = $well->parent_well;
+            if ( $plate_type eq 'INT' and $parent_well->plate->type eq 'DESIGN' ) {
+                return $DEFAULT_BACKBONE;
+            }
+            return backbone_for( $parent_well );
         }
 
         return;
@@ -729,7 +736,7 @@ sub common_assay_data {
 
     $lims2 = LIMS2::REST::Client->new_with_config();
 
-    my $todo = @ARGV ? iter( @ARGV ) : imap { chomp; $_ } iter( \*STDIN );    
+    my $todo = @ARGV ? iter( \@ARGV ) : imap { chomp; $_ } iter( \*STDIN );    
 
     my ( $total_attempted, $total_migrated ) = ( 0, 0 );    
     
