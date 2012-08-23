@@ -48,7 +48,8 @@ sub get_design_data {
         genotyping_primers      => genotyping_primers_for( $design ),
         comments                => comments_for( $design, $created_date ),
         target_transcript       => $transcript ? $transcript->stable_id : undef,
-        gene_ids                => gene_ids_for( $design )                
+        gene_ids                => gene_ids_for( $design ),
+        species                 => 'Mouse',
     };
 }
 
