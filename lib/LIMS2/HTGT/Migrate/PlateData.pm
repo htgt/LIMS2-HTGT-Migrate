@@ -1,11 +1,11 @@
 package LIMS2::HTGT::Migrate::PlateData;
 
 use Moose;
-use LIMS2::HTGT::Migrate::Utils qw( htgt_plate_types
-                                    lims2_plate_type
+use LIMS2::HTGT::Migrate::Utils qw( 
                                     format_well_name
                                     is_consistent_design_instance
-                                    sponsor2pipeline
+                                    canonical_username
+                                    canonical_datetime
                               );
 use DateTime;
 use DateTime::Format::Oracle;
@@ -20,12 +20,6 @@ has schema => (
     lazy_build => 1
 );
 
-has qc_schema => (
-    is         => 'ro',
-    isa        => 'ConstructQC',
-    lazy_build => 1
-);
-
 has limit => (
     is     => 'ro',
     isa    => 'Maybe[Int]',
@@ -33,7 +27,8 @@ has limit => (
 
 has plate_names => (
     is => 'ro',
-    isa => 'Maybe[ArrayRef]',
+    isa => 'ArrayRef',
+    default => sub { [] },
 );
 
 has created_after => (
@@ -78,6 +73,24 @@ has plate_type => (
     init_arg => undef
 );
 
+has lims2_plate_type => (
+    is       => 'ro',
+    isa      => 'Str',
+    init_arg => undef
+);
+
+has 'plate_name_regex' => (
+    is       => 'ro',
+    isa      => 'Maybe[Str]',
+    default  => undef,
+);
+
+has process_type => (
+    is       => 'ro',
+    isa      => 'Str',
+    init_arg => undef
+);
+
 has migrate_user => (
     is       => 'ro',
     isa      => 'Str',
@@ -89,11 +102,6 @@ with qw( MooseX::Log::Log4perl );
 sub _build_schema {
     require HTGT::DBFactory;
     HTGT::DBFactory->connect( 'eucomm_vector' );
-}
-
-sub _build_qc_schema {
-    require HTGT::DBFactory;
-    HTGT::DBFactory->connect( 'vector_qc' );
 }
 
 sub init_htgt_plate_data {
@@ -124,21 +132,24 @@ sub plate_resultset {
     my $self = shift;
     
     my %search = (
-        'me.type' => htgt_plate_types( $self->plate_type ),
+        'me.type' => $self->plate_type,
     );
 
     if ( $self->limit ) {
         $search{rownum} = { '<=', $self->limit };
     }
 
+    if ( @{ $self->plate_names } ) {
+        $search{'name'} = { 'IN', $self->plate_names };
+    }
+    elsif ( $self->plate_name_regex ) {
+        $search{'name'} = { 'LIKE' => $self->plate_name_regex };
+    }
+
     if ( $self->created_after ) {
         $search{'me.created_date'} = { '>', $self->created_after };
         
     }    
-
-    if ( $self->plate_names ) {
-        $search{'name'} = { 'IN', $self->plate_names };
-    }
     
     return $self->schema->resultset( 'Plate' )->search(
         \%search,
@@ -155,6 +166,7 @@ sub dump_plate_data {
         
     while ( my $plate = $plate_rs->next ) {
         Log::Log4perl::NDC->push( $plate->name );
+        $self->log->debug('Dumping plate data');
         try {
             my $data = $self->plate_data( $plate );
             print Dump( $data );
@@ -175,11 +187,12 @@ sub plate_data {
     $self->init_htgt_plate_data( $plate );
 
     my %data = (
-        plate_name  => $plate->name,
-        plate_type  => lims2_plate_type( $plate->type ),
-        plate_desc  => $plate->description || '',
-        created_by  => $plate->created_user || $self->migrate_user,
-        created_at  => $self->created_date->iso8601,
+        name        => $plate->name,
+        type        => $self->lims2_plate_type,
+        species     => 'Mouse',
+        description => $plate->description || '',
+        created_by  => canonical_username( $plate->created_user ),
+        created_at  => canonical_datetime( $self->created_date ),
         comments    => $self->plate_comments( $plate ),
         wells       => $self->wells( $plate )
     );
@@ -192,8 +205,6 @@ sub plate_data {
         $data{plate_group} = $plate_group;
     }
     
-    # XXX What about plate_blobs?
-    
     return \%data;
 }
 
@@ -203,11 +214,10 @@ sub plate_comments {
     my @comments;
 
     for my $c ( $plate->plate_comments ) {
-        my $created_at = $self->parse_oracle_date( $c->edit_date ) || $self->created_date;
         push @comments, {
-            plate_comment => $c->plate_comment,
-            created_by    => $c->edit_user || $self->migrate_user,
-            created_at    => $created_at->iso8601
+            comment_text => $c->plate_comment,
+            created_by   => canonical_username( $c->edit_user ),
+            created_at   => canonical_datetime( $c->edit_date ),
         }
     }
 
@@ -217,15 +227,12 @@ sub plate_comments {
 sub wells {
     my ( $self, $plate ) = @_;
 
-    my %wells;
-
+    my @well_data;
     for my $well ( $plate->wells ) {
-        my $well_name = format_well_name( $well->well_name );
-        die "Duplicate well $well_name" if $wells{$well_name};
-        $wells{$well_name} = $self->well_data( $well );
+        my $well_data = $self->well_data( $well );
+        push @well_data, $well_data if $well_data;
     }
-
-    return \%wells;
+    return \@well_data;
 }
 
 sub well_data {
@@ -233,32 +240,15 @@ sub well_data {
     
     $self->init_htgt_well_data( $well );
 
-    return {} unless defined $well->design_instance_id;
+    return unless defined $well->design_instance_id;
     
     my %data = (
-        created_at   => $self->created_date->iso8601,
-        comments     => $self->well_comments( $well ),
-        accepted     => $self->accepted_override( $well ),
-        parent_wells => $self->parent_wells( $well ),
-        pipeline     => $self->pipeline_for( $well )
+        well_name => format_well_name( $well->well_name ),
+        #comments  => $self->well_comments( $well ),
+        process_type => $self->process_type,
     );
-
-    if ( $data{accepted} ) {
-        $data{assay_complete} = $data{accepted}->{created_at};
-    }    
     
     return \%data;
-}
-
-sub pipeline_for {
-    my ( $self, $well ) = @_;
-
-    my $sponsor = ( $self->get_htgt_well_data_value( 'sponsor' )
-                        || $self->get_htgt_plate_data_value( 'sponsor' ) );
-
-    return undef unless defined $sponsor;
-
-    return sponsor2pipeline( $sponsor );    
 }
 
 sub well_comments {
@@ -266,39 +256,23 @@ sub well_comments {
 
     my @comments;
     for my $c ( grep { $_->data_type =~ m/comments?/i } $self->htgt_well_data ) {
-        my $created_at = $self->parse_oracle_date( $c->edit_date ) || $self->created_date;        
         push @comments, {
-            created_at => $created_at->iso8601,
-            created_by => $c->edit_user || $self->migrate_user,
-            comment    => $self->trim( $c->data_value )
+            created_at   => canonical_datetime( $c->edit_date ),
+            created_by   => canonical_username( $c->edit_user) || $self->migrate_user,
+            comment_text => $self->trim( $c->data_value )
         };
     }
 
     return \@comments;
 }
 
-sub accepted_override {
+sub parent_well {
     my ( $self, $well ) = @_;
-
-    my $dist = $self->get_htgt_well_data( 'distribute' )
-        or return undef;
-
-    return +{
-        accepted   => $dist->data_value eq 'yes' ? 1 : 0,
-        created_at => $self->parse_oracle_date( $dist->edit_date )->iso8601,
-        created_by => $dist->edit_user || $self->migrate_user
-    };        
-}
-
-sub parent_wells {
-    my ( $self, $well ) = @_;
-
-    my @parent_wells;
     
     if ( $well->parent_well_id ) {
         my $parent_well = $well->parent_well;
         if ( is_consistent_design_instance( $well, $parent_well ) ) {
-            push @parent_wells, +{
+            return {
                 plate_name => $parent_well->plate->name,
                 well_name  => $parent_well->well_name
             };
@@ -308,84 +282,7 @@ sub parent_wells {
         }
     }
 
-    return \@parent_wells;
-}
-
-sub get_legacy_qc_data {
-    my ( $self, $well ) = @_;    
-
-    my $qctest_well_data = $self->get_htgt_well_data( 'qctest_result_id' )
-        or return;
-    
-    my $qctest_result_id = $qctest_well_data->data_value;
-    
-    my $qctest_result = $self->qc_schema->resultset( 'QctestResult' )->find(
-        {
-            qctest_result_id => $qctest_result_id
-        }
-    ) or return;
-
-    my %valid_primers;
-    
-    foreach my $primer ( $qctest_result->qctestPrimers ) {
-        my $seq_align_feature = $primer->seqAlignFeature
-            or next;
-        my $loc_status = $seq_align_feature->loc_status
-            or next;
-        $valid_primers{ uc( $primer->primer_name ) } = 1
-            if $loc_status eq 'ok';
-    }
-    
-    my $run_date   = $self->parse_oracle_date( $qctest_result->qctestRun->run_date )->iso8601;
-    my $pass_level = $self->get_htgt_well_data_value( 'pass_level' ) || 'fail';    
-
-    return +{
-        legacy_qc_test_result => {
-            qc_test_result_id => $qctest_result_id,
-            pass_level        => $pass_level,
-            valid_primers     => join( q{,}, sort keys %valid_primers )
-        },
-        assay_pending         => $run_date,
-        assay_results         => [
-            {
-                assay      => 'sequencing_qc',
-                result     => $self->sequencing_qc_pass_fail( $well ),
-                created_at => $run_date,
-                created_by => $qctest_well_data->edit_user || $self->migrate_user
-            }
-        ],
-        assay_complete        => $self->parse_oracle_date( $qctest_well_data->edit_date )->iso8601
-    };
-}
-
-sub get_qc_data {
-    my ( $self, $well ) = @_;
-
-    my $tr_well_data = $self->get_htgt_well_data( 'new_qc_test_result_id' )
-        or return;
-    
-    my $qc_date     = $self->parse_oracle_date( $tr_well_data->edit_date )->iso8601;
-    my $pass_level  = $self->get_htgt_well_data_value( 'pass_level' ) || 'fail';
-    my $mixed_reads = $self->get_htgt_well_data_value( 'mixed_reads' ) || 'no';
-
-    return +{
-        qc_test_result => {
-            qc_test_result_id => $tr_well_data->data_value,
-            valid_primers     => $self->get_htgt_well_data_value( 'valid_primers' ) || '',
-            pass              => $pass_level eq 'pass' ? 1 : 0,
-            mixed_reads       => $mixed_reads eq 'yes' ? 1 : 0
-        },
-        assay_results => [
-            {
-                assay      => 'sequencing_qc',
-                result     => $pass_level,
-                created_at => $qc_date,
-                created_by => $tr_well_data->edit_user || $self->migrate_user
-            }
-        ],
-        assay_pending  => $qc_date,
-        assay_complete => $qc_date
-    };
+    return;
 }
 
 
