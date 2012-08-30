@@ -24,10 +24,10 @@ override well_data => sub {
 
     my $parent_wells = $self->sep_input_wells( $well );
 
-    $data->{allele_plate} = $parent_wells->{allele_plate};
-    $data->{allele_well} = $parent_wells->{allele_well};
-    $data->{vector_plate} = $parent_wells->{vector_plate};
-    $data->{vector_well} = $parent_wells->{vector_well};
+    $data->{dna_plate} = $parent_wells->{dna_plate};
+    $data->{dna_well} = $parent_wells->{dna_well};
+    $data->{xep_plate} = $parent_wells->{xep_plate};
+    $data->{xep_well} = $parent_wells->{xep_well};
     
     return $data;
 };
@@ -38,13 +38,13 @@ sub sep_input_wells {
 
     my $parent_well = $self->parent_well( $well );
 
-    $sep_input_wells{vector_plate} = $parent_well->{plate_name};
-    $sep_input_wells{vector_well}  = $parent_well->{well_name};
+    $sep_input_wells{dna_plate} = $parent_well->{plate_name};
+    $sep_input_wells{dna_well}  = $parent_well->{well_name};
 
     # first allele input is frm xep plate, the well locations for a
     # sep and xep plate should match up
-    $sep_input_wells{allele_plate} = $self->xep_plate_name( $well->plate );
-    $sep_input_wells{allele_well}  = substr( $well->well_name, -3);
+    $sep_input_wells{xep_plate} = $self->xep_plate_name( $well->plate );
+    $sep_input_wells{xep_well}  = substr( $well->well_name, -3);
 
     return \%sep_input_wells;
 }
