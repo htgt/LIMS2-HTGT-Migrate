@@ -5,7 +5,16 @@ use namespace::autoclean;
 
 extends 'LIMS2::HTGT::Migrate::PlateData';
 
-#No XEP plates in htgt, need to work out XEP plate information from SEP plates
+# No XEP plates in htgt, need to work out XEP plate information from SEP plate information
+# we use teh SEP plate as a base for what to create on the XEP plate
+
+# Specify SEP plate that will have the child wells of the XEP plate we are trying to create.
+# Infer the FEP plate that is the parent of the XEP plate ( e.g. XEP0006 parent will be FEP0006 )
+# Look on FEP plate for one well with same design_instance as well on SEP plate, if there is one 
+# and just one we use this FEP well as the parent for the XEP well
+# if no wells on FEP plate with same di then search for a well with the same gene marker symbol in the
+# same position on the FEP well, if it exists then thats the parent well.
+
 has '+plate_type' => (
     default => 'EP'
 );
