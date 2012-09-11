@@ -28,8 +28,11 @@ sub migrate_plate {
 
     my $lims2_plate = try {
         retrieve_or_create_lims2_plate( $plate )
+    }
+    catch {
+        ERROR('Unable to retrieve or create lims2 plate' . $_);
     };
-    
+
     return unless $lims2_plate;
 
     for my $well ( $plate->wells ) {
@@ -41,7 +44,7 @@ sub migrate_plate {
             $migrated++;
         }
         catch {
-            ERROR( $_ );            
+            ERROR( $_ );
         };
         Log::Log4perl::NDC->pop;
     }
@@ -60,7 +63,7 @@ sub migrate_well {
     # happened.
     die "Cannot migrate well with null design instance: $htgt_well"
         unless defined $htgt_well->design_instance_id;
-    
+
     my $lims2_well = retrieve_lims2_well( $htgt_well );
     if ( defined $lims2_well ) {
         DEBUG( "Well $htgt_well already exists in LIMS2" );
@@ -84,13 +87,13 @@ sub migrate_well {
     # LIMS2 before attempting to create the well
     if ( $process_type eq 'create_di' ) {
         retrieve_or_create_lims2_design( $well_data->{process_data}{design_id} );
-    }    
+    }
 
     INFO( "Migrating well $htgt_well, process $process_type" );
 
     $lims2_well = create_lims2_well( $well_data );
 
-    
+
     load_assay_data( $htgt_well, $process_type );
 
     my $accepted_data = build_accepted_data( $htgt_well );
@@ -105,12 +108,12 @@ sub compute_process_type {
     my ( @expected_types ) = @_;
 
     return sub {
-        my ( $parent_well, $child_well ) = @_;        
-    
+        my ( $parent_well, $child_well ) = @_;
+
         my ( $cassette, $backbone ) = cassette_backbone_transition( $parent_well, $child_well );
 
         my $process_type;
-    
+
         if ( $cassette and not $backbone ) {
             $process_type = '2w_gateway';
         }
@@ -132,14 +135,14 @@ sub compute_process_type {
                 return $process_type;
             }
         }
-    
+
         die "Computed process type $process_type was not one of " . join( q{,}, @expected_types ) . "\n";
-    };    
+    };
 }
 
 sub retrieve_or_create_lims2_design {
-    my $design_id = shift;    
-    
+    my $design_id = shift;
+
     my $design = try {
         $lims2->GET( 'design', { id => $design_id } );
     }
@@ -197,7 +200,7 @@ sub retrieve_lims2_well {
         undef;
     };
 
-    return $lims2_well;    
+    return $lims2_well;
 }
 
 sub create_lims2_well {
@@ -206,7 +209,7 @@ sub create_lims2_well {
     INFO( "Creating well $well_data->{plate_name}\[$well_data->{well_name}\], process type $well_data->{process_data}{type}" );
     my $lims2_well = $lims2->POST( 'well', $well_data );
 
-    return $lims2_well;    
+    return $lims2_well;
 }
 
 sub create_lims2_well_assay {
@@ -223,13 +226,13 @@ sub build_design_data {
 
     my $design = $htgt->resultset( 'Design' )->find( { design_id => $design_id } )
         or die "Failed to retrieve design $design_id";
-    
-    return get_design_data( $design );    
+
+    return get_design_data( $design );
 }
 
 sub build_accepted_data {
     my $well = shift;
-    
+
     my $well_data = $well->search_related( well_data => { data_type => 'distribute' } )->first
         or return;
 
@@ -263,10 +266,9 @@ sub build_plate_data {
         push @{ $plate_data{comments} }, {
             comment_text => $comment_text,
             created_by   => canonical_username( $c->edit_user || 'unknown' ),
-            created_at   => canonical_datetime( $c->edit_date )                
+            created_at   => canonical_datetime( $c->edit_date )
         };
     }
-
     return \%plate_data;
 }
 
@@ -274,7 +276,7 @@ sub build_well_data {
     my ( $well, $parent_well, $process_type ) = @_;
 
     my $plate = $well->plate;
-    
+
     my %well_data = (
         plate_name   => $plate->name,
         well_name    => format_well_name( $well->well_name ),
@@ -292,9 +294,9 @@ sub build_well_data {
         $process_data{design_id} = $well->design_instance->design_id;
         $process_data{bacs}      = bacs_for( $well )
     }
-    elsif ( $process_type eq 'int_recom' ) {        
+    elsif ( $process_type eq 'int_recom' ) {
         $process_data{cassette} = cassette_for( $well );
-        $process_data{backbone} = backbone_for( $well );        
+        $process_data{backbone} = backbone_for( $well );
     }
     elsif ( $process_type eq '2w_gateway' ) {
         my ( $cassette, $backbone ) = cassette_backbone_transition( $parent_well, $well );
@@ -332,7 +334,7 @@ sub cassette_backbone_transition {
 
     my $parent_cassette = cassette_for( $parent_well )
         or die "Failed to determine cassette for $parent_well";
-    
+
     my $parent_backbone = backbone_for( $parent_well )
         or die "Failed to determine backbone for $parent_well";
 
@@ -341,7 +343,7 @@ sub cassette_backbone_transition {
 
     my $child_backbone = backbone_for( $child_well )
         or die "Failed to determine backbone for $child_well";
-    
+
     if ( $parent_cassette eq $child_cassette and $parent_backbone ne $child_backbone ) {
         return ( undef, $child_backbone );
     }
@@ -366,7 +368,7 @@ sub bacs_for {
     my @bacs;
 
     for my $di_bac ( $well->design_instance->design_instance_bacs ) {
-        next unless defined $di_bac->bac_plate;        
+        next unless defined $di_bac->bac_plate;
         my $bac = $di_bac->bac;
         push @bacs, {
             bac_plate   => substr( $di_bac->bac_plate, -1 ),
@@ -392,7 +394,7 @@ sub lims2_plate_type {
     if ( $plate->type eq 'PGD' or $plate->type eq 'GR' or $plate->type eq 'GRQ' ) {
         my @queue = ( $plate );
         while ( @queue ) {
-            my $pplate = shift @queue;        
+            my $pplate = shift @queue;
             if ( ( $pplate->plate_data_value( 'final_vectors' ) || 'no' ) eq 'yes' ) {
                 return 'FINAL';
             }
@@ -401,9 +403,9 @@ sub lims2_plate_type {
                     $pplate->wells;
             push @queue, grep { $_->type eq 'PGD' or $_->type eq 'GR' or $_->type eq 'GRQ' } values %parent_plates;
         }
-        return 'POSTINT';        
-    }    
-    
+        return 'POSTINT';
+    }
+
     if ( $plate->type eq 'GRD' or $plate->type eq 'PGG' ) {
         return 'DNA';
     }
@@ -412,7 +414,7 @@ sub lims2_plate_type {
 }
 
 {
-    
+
     const my %HANDLER_FOR_TRANSITION => (
         ROOT => {
             DESIGN  => sub { 'create_di' }
@@ -477,13 +479,13 @@ sub lims2_plate_type {
 
     sub cassette_for {
         my $well = shift;
-        
+
         my $plate_type = lims2_plate_type( $well->plate );
-        
+
         if ( $plate_type eq 'DESIGN' ) {
             return;
         }
-        
+
         my $cassette = $well->well_data_value( 'cassette' );
         if ( $cassette ) {
             return $cassette;
@@ -496,8 +498,8 @@ sub lims2_plate_type {
         if ( $well->parent_well_id ) {
             return cassette_for( $well->parent_well );
         }
-    
-        return;    
+
+        return;
     }
 }
 
@@ -526,7 +528,7 @@ sub lims2_plate_type {
         }
 
         return;
-    }    
+    }
 }
 
 sub plate_well_data {
@@ -542,12 +544,12 @@ sub recombinase_for {
 
     my $parent_well = $well->parent_well
         or return []; # Cannot apply recombinase without a parent well
-    
+
     my $parent_data = plate_well_data( $parent_well );
     my $data        = plate_well_data( $well );
 
     my @recombinase_for;
-    
+
     for my $r ( @RECOMBINASE ) {
         my $data_type = 'apply_' . lc $r;
         if ( $data->{$data_type} and not $parent_data->{$data_type} ) {
@@ -624,7 +626,7 @@ sub load_sequencing_assays {
     my ( $htgt_well, $well_data ) = @_;
 
     my $assay;
-    
+
     if ( $well_data->{new_qc_test_result_id} ) {
         $assay = get_new_qc_assay( $htgt_well, $well_data );
     }
@@ -633,10 +635,10 @@ sub load_sequencing_assays {
     }
     else {
         return;
-    }    
+    }
 
     create_lims2_well_assay( 'qc_sequencing_result', $assay );
-    
+
     return;
 }
 
@@ -651,7 +653,7 @@ sub get_new_qc_assay {
 
     $assay->{test_result_url} = 'http://www.sanger.ac.uk/htgt/newqc/view_result/' . $result_id;
 
-    if ( $well_data->{valid_primers} and $well_data->{valid_primers}->data_value ) {        
+    if ( $well_data->{valid_primers} and $well_data->{valid_primers}->data_value ) {
         $assay->{valid_primers} = $well_data->{valid_primers}->data_value;
     }
 
@@ -672,14 +674,14 @@ sub get_old_qc_assay {
     my $qctest_well_data = $well_data->{qctest_result_id};
 
     my $assay = common_assay_data( $well, $qctest_well_data );
-    
+
     my $qctest_result_id = $qctest_well_data->data_value;
 
     $assay->{test_result_url} = 'http://www.sanger.ac.uk/htgt/qc/qctest_result_view?qctest_result_id=' . $qctest_result_id;
 
     # XXX This conversion of pass level to boolean might be too naive
     if ( $well_data->{pass_level} and $well_data->{pass_level}->data_value =~ m/pass/ ) {
-        $assay->{pass} = 1;        
+        $assay->{pass} = 1;
     }
 
     my $qctest_result = $qc_schema->resultset( 'QctestResult' )->find(
@@ -689,7 +691,7 @@ sub get_old_qc_assay {
     ) or return $assay;
 
     my %valid_primers;
-    
+
     foreach my $primer ( $qctest_result->qctestPrimers ) {
         my $seq_align_feature = $primer->seqAlignFeature
             or next;
@@ -698,7 +700,7 @@ sub get_old_qc_assay {
         $valid_primers{ uc( $primer->primer_name ) } = 1
             if $loc_status eq 'ok';
     }
-    
+
     $assay->{valid_primers} = join q{,}, sort keys %valid_primers;
 
     return $assay;
@@ -714,13 +716,13 @@ sub common_assay_data {
         created_by  => canonical_username( $well_data->edit_user || 'unknown' )
     }
 }
-            
-{    
+
+{
     my %log4perl = (
-        level  => $WARN,        
+        level  => $WARN,
         layout => '%d %p %x %m%n'
     );
-    
+
     GetOptions(
         'trace'   => sub { $log4perl{level} = $TRACE },
         'debug'   => sub { $log4perl{level} = $DEBUG },
@@ -732,20 +734,20 @@ sub common_assay_data {
 
     $htgt = HTGT::DBFactory->connect( 'eucomm_vector' );
 
-    $qc_schema = HTGT::DBFactory->connect( 'vector_qc' );    
+    $qc_schema = HTGT::DBFactory->connect( 'vector_qc' );
 
     $lims2 = LIMS2::REST::Client->new_with_config();
 
-    my $todo = @ARGV ? iter( \@ARGV ) : imap { chomp; $_ } iter( \*STDIN );    
+    my $todo = @ARGV ? iter( \@ARGV ) : imap { chomp; $_ } iter( \*STDIN );
 
-    my ( $total_attempted, $total_migrated ) = ( 0, 0 );    
-    
+    my ( $total_attempted, $total_migrated ) = ( 0, 0 );
+
     while ( my $plate_name = $todo->next ) {
         Log::Log4perl::NDC->push( $plate_name );
         my $plate = $htgt->resultset( 'Plate' )->find( { name => $plate_name } );
         if ( ! $plate ) {
             ERROR( "Failed to retrieve plate $plate_name" );
-            next;            
+            next;
         }
         if ( $plate->type eq 'VTP' ) {
             WARN( "Refusing to migrate vector template plate" );
@@ -754,10 +756,10 @@ sub common_assay_data {
         my ( $attempted, $migrated ) = migrate_plate( $plate );
         $total_attempted += $attempted;
         $total_migrated  += $migrated;
-    }    
+    }
     continue {
         Log::Log4perl::NDC->pop;
-    }    
-    
-    INFO( "Successfully migrated $total_migrated of $total_attempted wells" );    
+    }
+
+    INFO( "Successfully migrated $total_migrated of $total_attempted wells" );
 }
