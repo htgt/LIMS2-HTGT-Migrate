@@ -433,6 +433,9 @@ sub lims2_plate_type {
         return 'DNA';
     }
 
+    #NOTE, only migrated plates up to type DNA, the code to migrate other plate types is
+    # here but it is untested
+
     die "Cannot determine LIMS2 plate type for $plate";
 }
 
