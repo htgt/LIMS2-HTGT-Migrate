@@ -41,7 +41,7 @@ sub sep_input_wells {
     $sep_input_wells{dna_plate} = $parent_well->{plate_name};
     $sep_input_wells{dna_well}  = $parent_well->{well_name};
 
-    # first allele input is frm xep plate, the well locations for a
+    # first allele input is from xep plate, the well locations for a
     # sep and xep plate should match up
     $sep_input_wells{xep_plate} = $self->xep_plate_name( $well->plate );
     $sep_input_wells{xep_well}  = substr( $well->well_name, -3);
