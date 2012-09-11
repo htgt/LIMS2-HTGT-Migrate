@@ -247,18 +247,19 @@ sub build_accepted_data {
 
 sub build_plate_data {
     my $plate = shift;
-    
+
     my %plate_data = (
         name        => $plate->name,
         type        => lims2_plate_type( $plate ),
         created_by  => canonical_username( $plate->created_user || 'unknown' ),
-        created_at  => canonical_datetime( $plate->created_date )
+        created_at  => canonical_datetime( $plate->created_date ),
+        species     => 'Mouse',
     );
 
     my $desc = trim( $plate->description );
     if ( length $desc ) {
         $plate_data{description} = $desc;
-    }    
+    }
 
     for my $c ( $plate->plate_comments ) {
         my $comment_text = trim( $c->plate_comment );
@@ -458,17 +459,17 @@ sub lims2_plate_type {
             SFP => sub { 'freeze' }
         },
     );
-    
+
     sub process_type_for {
         my ( $parent_well, $child_well ) = @_;
-        
+
         my $parent_type = $parent_well ? lims2_plate_type( $parent_well->plate ) : 'ROOT';
         my $child_type  = lims2_plate_type( $child_well->plate );
 
         die "No process configured for transition from $parent_type to $child_type"
             unless exists $HANDLER_FOR_TRANSITION{$parent_type}
                 and exists $HANDLER_FOR_TRANSITION{$parent_type}{$child_type};
-        
+
         return $HANDLER_FOR_TRANSITION{$parent_type}{$child_type}->( $parent_well, $child_well );
     }
 }
