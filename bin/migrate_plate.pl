@@ -591,16 +591,20 @@ sub recombinase_for {
         PG     => \&load_sequencing_assays,
         PGD    => \&load_sequencing_assays,
         GR     => \&load_sequencing_assays,
-        GRQ    => \&load_sequencing_assays,        
+        GRQ    => \&load_sequencing_assays,
         GRD    => \&load_dna_assays,
-        PGG    => \&load_dna_assays,        
+        PGG    => \&load_dna_assays,
+        EP     => \&load_colony_pick_data,
+        EPD    => \&load_primer_band_data, #TODO also load_sequencing_assays?
+        REPD   => \&load_primer_band_data,
+        PIQ    => \&load_primer_band_data,
     );
 
     sub load_assay_data {
         my ( $htgt_well, $process_type ) = @_;
 
-        my $plate_type = $htgt_well->plate->type;        
-        
+        my $plate_type = $htgt_well->plate->type;
+
         return unless exists $ASSAY_DATA_HANDLER{$plate_type};
 
         my %well_data = map { $_->data_type => $_ } $htgt_well->well_data;
@@ -608,6 +612,56 @@ sub recombinase_for {
         return $ASSAY_DATA_HANDLER{$plate_type}->($htgt_well, \%well_data);
     }
 }
+
+{
+    const my @COLONY_RESULTS => qw(
+        BLUE_COLONIES
+        TOTAL_COLONIES
+        COLONIES_PICKED
+        WHITE_COLONIES
+        REMAINING_UNSTAINED_COLONIES
+    );
+
+    sub load_colony_pick_data {
+        my ( $htgt_well, $well_data ) = @_;
+
+        for my $wd ( map { $well_data->{$_} or () } @COLONY_RESULTS ) {
+            my $type = lc $wd->data_type;
+            my $assay = common_assay_data( $htgt_well, $wd );
+            $assay->{colony_type} = $type;
+            $assay->{count} = $wd->data_value;
+            create_lims2_well_assay( 'colony_picks', $assay );
+        }
+    }
+}
+
+{
+    const my @PRIMER_BAND_TYPES => qw(
+        gr1
+        gr2
+        gr3
+        gr4
+        gf1
+        gf2
+        gf3
+        gf4
+        tr_pcr
+    );
+
+    sub load_primer_band_data {
+        my ( $htgt_well, $well_data ) = @_;
+
+        for my $type ( @PRIMER_BAND_TYPES ) {
+            my $wd = $well_data->{'primer_band_' . $type};
+            next unless $wd;
+            my $assay = common_assay_data( $htgt_well, $wd );
+            $assay->{primer_band_type} = $type;
+            $assay->{pass} = $wd->data_value eq 'yes' ? 1 : 0;
+            create_lims2_well_assay( 'primer_bands', $assay );
+        }
+    }
+}
+
 
 sub load_recombineering_assays {
     my ( $htgt_well, $well_data ) = @_;
