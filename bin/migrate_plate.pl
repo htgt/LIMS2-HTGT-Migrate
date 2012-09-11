@@ -324,6 +324,28 @@ sub build_well_data {
     elsif ( $process_type eq 'dna_prep' ) {
         # no aux data
     }
+    elsif ( $process_type eq 'clone_pick' ) {
+        # no aux data
+    }
+    elsif ( $process_type eq 'clone_pool' ) {
+        # no aux data
+    }
+    elsif ( $process_type eq 'freezing' ) {
+        #no aux data
+    }
+    elsif ( $process_type eq 'first_electroporation' ) {
+        my $cell_line = $well->well_data_value('es_cell_line') || $well->plate->plate_data_value('es_cell_line');
+        die "No es_cell_line set for $well" unless $cell_line;
+
+        $process_data{cell_line} = $cell_line;
+    }
+    elsif ( $process_type eq 'second_electroporation' ) {
+        die "Not implemented SEP plate migrate"
+    }
+    else {
+        die "Un-recognised process type: $process_type";
+
+    }
 
     $well_data{process_data} = \%process_data;
 
@@ -437,19 +459,19 @@ sub lims2_plate_type {
             DNA     => sub { 'dna_prep' }
         },
         DNA => {
-            EP => sub { 'electroporation' }
+            EP => sub { 'first_electroporation' }
         },
         EP => {
             EP_PICK => sub { 'colony_pick' }, # EPD in HTGT
-            #EP_POOL => sub { 'colony_pool' }, # new
             XEP     => sub { 'recombinase' }, # Flp excision
         },
         EP_PICK => {
             FP => sub { 'freeze' }
         },
         XEP => {
-            XEP_POOL  => sub { 'colony_pool' },
-            SEP       => sub { 'electroporation' }
+            XEP_POOL => sub { 'colony_pool' },
+            XEP_PICK => sub { 'colony_pick' }, # EPD in HTGT
+            SEP      => sub { 'second_electroporation' }
         },
         SEP => {
             SEP_PICK => sub { 'colony_pick' },
