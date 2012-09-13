@@ -12,6 +12,7 @@ use Const::Fast;
 use Try::Tiny;
 use HTTP::Status qw( :constants );
 use Getopt::Long;
+use Pod::Usage;
 
 const my $WELL_DATA_TYPE => 'qc_sequencing_result';
 
@@ -250,11 +251,10 @@ sub common_assay_data {
     );
 
     GetOptions(
-        'trace'   => sub { $log4perl{level} = $TRACE },
         'debug'   => sub { $log4perl{level} = $DEBUG },
         'verbose' => sub { $log4perl{level} = $INFO },
         'log=s'   => sub { $log4perl{file}  = '>>' . $_[1] },
-    ) or die "Usage: $0 [OPTIONS] [PLATE_NAME ...]\n";
+    ) or pod2usage(2);
 
     Log::Log4perl->easy_init( \%log4perl );
 
@@ -285,3 +285,35 @@ sub common_assay_data {
 
     INFO( "Successfully updated $total_updated of $total_attempted wells" );
 }
+
+__END__
+
+=head1 NAME
+
+update_plate_qc.pl - Update QC Results in LIMS2 with latest data from HTGT
+
+=head1 SYNOPSIS
+
+update_plate_qc.pl [options] [plate_name ..] | file_name
+
+      --help            Display a brief help message
+      --debug           Display debug log messages
+      --verbose         Display info log messages
+
+Takes a input of plate names to update their qc results LIMS2.
+
+=head1 DESCRIPTION
+
+Specify a plate in LIMS2, it will find the same plate in HTGT and compare the qc results.
+If the results are different the LIMS2 plate will be updated with the latest qc from HTGT.
+If the plate in LIMS2 does not have any qc linked to it then it will be created.
+
+=head1 AUTHOR
+
+Sajith Perera
+
+=head1 BUGS
+
+None reported... yet.
+
+=cut
