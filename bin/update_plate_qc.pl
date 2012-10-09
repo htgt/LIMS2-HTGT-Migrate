@@ -13,6 +13,7 @@ use Try::Tiny;
 use HTTP::Status qw( :constants );
 use Getopt::Long;
 use Pod::Usage;
+use List::MoreUtils qw( any );
 
 const my $WELL_DATA_TYPE => 'qc_sequencing_result';
 
@@ -37,6 +38,8 @@ sub update_plate_qc {
     for my $htgt_well ( $plate->wells ) {
         next unless defined $htgt_well->design_instance_id; # skip empty wells
         DEBUG( "Looking at $htgt_well" );
+
+        next unless any{ $_ eq $htgt_well->well_name } @{ $lims2_plate->{wells} };
 
         my $htgt_well_qc = get_htgt_well_qc( $htgt_well );
         next unless $htgt_well_qc;
@@ -307,6 +310,8 @@ Takes a input of plate names to update their qc results LIMS2.
 Specify a plate in LIMS2, it will find the same plate in HTGT and compare the qc results.
 If the results are different the LIMS2 plate will be updated with the latest qc from HTGT.
 If the plate in LIMS2 does not have any qc linked to it then it will be created.
+
+You could run the script against a list of all plates on LIMS2 that could have qc results.
 
 =head1 AUTHOR
 
