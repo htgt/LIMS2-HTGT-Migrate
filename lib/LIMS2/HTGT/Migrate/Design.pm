@@ -10,11 +10,12 @@ use Sub::Exporter -setup => {
 use Const::Fast;
 use DateTime;
 use LIMS2::HTGT::Migrate::Utils qw( parse_oracle_date canonical_username );
+use HTGT::Utils::DesignPhase qw( get_phase_from_design_and_transcript );
 use List::MoreUtils qw( uniq );
 use Log::Log4perl qw( :easy );
 use Try::Tiny;
 
-const my $ASSEMBLY => 'NCBIM37';
+const my $ASSEMBLY => 'GRCm38';
 
 const my @GENOTYPING_PRIMER_NAMES => qw( GF1 GF2 GF3 GF4
                                          GR1 GR2 GR3 GR4
@@ -36,13 +37,14 @@ sub get_design_data {
     my $oligos       = oligos_for( $design, $type );
     my $created_date = parse_oracle_date( $design->created_date ) || $run_date;
     my $transcript   = target_transcript_for( $design );
+    die 'No transcript found for design' unless $transcript;
     return {
         id                      => $design->design_id,
         name                    => $design->find_or_create_name,
         type                    => $type,
         created_by              => ( $design->created_user ? canonical_username( $design->created_user) : 'unknown' ),
         created_at              => $created_date->iso8601,
-        phase                   => phase_for( $oligos, $transcript, $type ),
+        phase                   => get_phase_from_design_and_transcript( $design, $transcript->stable_id ),
         validated_by_annotation => $design->validated_by_annotation || '',
         oligos                  => $oligos,
         genotyping_primers      => genotyping_primers_for( $design ),
@@ -58,7 +60,7 @@ sub oligos_for {
 
     my @oligos;
 
-    my $features = validated_display_features_for( $design );    
+    my $features = $design->validated_display_features;
 
     for my $oligo_name ( @OLIGO_NAMES ) {
         my $oligo = $features->{$oligo_name} or next;
@@ -211,81 +213,14 @@ sub type_for {
     die "Unrecognized design type '$dt'\n";
 }
 
-sub phase_for {
-    my ( $oligos, $transcript, $design_type ) = @_;
-
-    unless ( $transcript ) {        
-        WARN "Cannot compute phase without transcript";
-        return undef;
-    }    
-    
-    my ( $U5 ) = grep { $_->{type} eq 'U5' } @{$oligos};
-    unless ( $U5 and @{$U5->{loci}} ) {
-        WARN "Cannot compute phase without U5 oligo";
-        return undef;
-    }
-    
-    unless ( $transcript->coding_region_start ) {
-        WARN "Non-coding transcript " . $transcript->stable_id;
-        return undef;
-    }
-    
-    my $U5_locus = $U5->{loci}[0];
-
-    # XXX Check for off-by-one errors in boundary cases
-    if ( $U5_locus->{chr_strand} == 1 ) {
-        my $cs = $U5_locus->{chr_end} + 1;
-        if ( $transcript->coding_region_start > $cs or $transcript->coding_region_end < $cs ) {
-            return -1;
-        }
-        my $coding_bases = 0;
-        for my $e ( @{ $transcript->get_all_Exons } ) {
-            next unless $e->coding_region_start( $transcript );
-            last if $e->seq_region_start > $cs;
-            if ( $e->seq_region_end < $cs ) {
-                $coding_bases += $e->coding_region_end( $transcript ) - $e->coding_region_start( $transcript ) + 1;
-            }                
-            else {
-                $coding_bases += $cs - $e->coding_region_start( $transcript );
-            }
-        }
-        return $coding_bases % 3;
-    }
-    else {
-        my $ce = $U5_locus->{chr_start} - 1;
-        if ( $transcript->coding_region_start > $ce or $transcript->coding_region_end < $ce ) {
-            return -1;
-        }
-        my $coding_bases = 0;
-        for my $e ( @{ $transcript->get_all_Exons } ) {
-            next unless $e->coding_region_start( $transcript );
-            last if $e->coding_region_end( $transcript ) < $ce;
-            if ( $e->seq_region_start > $ce ) {
-                $coding_bases += $e->coding_region_end( $transcript ) - $e->coding_region_start( $transcript ) + 1;
-            }
-            else {
-                $coding_bases += $e->coding_region_end( $transcript ) - $ce;
-            }            
-        }
-        return $coding_bases % 3;        
-    }    
-}
-
 sub target_transcript_for {
     my ( $design ) = @_;    
-    
-#    if ( $design->start_exon_id ) {
-#        my $transcript = $design->start_exon->transcript->primary_name;
-#        if ( $transcript and $transcript =~ m/^ENSMUST\d+$/ ) {
-#            return $transcript;
-#        }
-#    }
 
     try {
         $design->info->target_transcript;
     } catch {
         s/ at .*$//s;
-        WARN $_;        
+        WARN( "Error getting target transcript " . $_ );
         undef;
     };
 }
@@ -305,46 +240,6 @@ EOT
     );
 
     return $projects;
-}
-
-sub validated_display_features_for {
-    my $design = shift;
-
-    my $validated_features = $design->search_related(
-        features => {
-            'feature_data_type.description' => 'validated'
-        },
-        {
-            join => {
-                feature_data => 'feature_data_type'
-            }
-        }
-    );
-
-    my $validated_display_features = $validated_features->search_related(
-        display_features => {
-            assembly_id => 11,
-            label       => 'construct'
-        },
-        {
-            prefetch => [
-                {
-                   feature => 'feature_type'
-                },
-                'chromosome',
-            ]
-        }
-    );
-
-    my %display_feature_for;
-
-    while ( my $df = $validated_display_features->next ) {
-        my $type = $df->feature->feature_type->description;
-        die "Multiple $type features\n" if exists $display_feature_for{$type};        
-        $display_feature_for{$type} = $df;
-    }
-
-    return \%display_feature_for;
 }
 
 1;
