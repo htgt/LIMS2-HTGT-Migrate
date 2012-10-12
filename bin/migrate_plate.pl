@@ -223,11 +223,15 @@ sub create_lims2_well_assay {
 
 sub build_design_data {
     my $design_id = shift;
+    Log::Log4perl::NDC->push( $design_id );
 
     my $design = $htgt->resultset( 'Design' )->find( { design_id => $design_id } )
         or die "Failed to retrieve design $design_id";
 
-    return get_design_data( $design );
+    my $design_data = get_design_data( $design );
+    Log::Log4perl::NDC->pop;
+
+    return $design_data;
 }
 
 sub build_accepted_data {
@@ -461,6 +465,7 @@ sub lims2_plate_type {
             FINAL   => compute_process_type( qw( recombinase rearray ) ),
             DNA     => sub { 'dna_prep' }
         },
+        # NOTE not setup to handle processes below yet
         DNA => {
             EP => sub { 'first_electroporation' }
         },
@@ -597,6 +602,7 @@ sub recombinase_for {
         GRQ    => \&load_sequencing_assays,
         GRD    => \&load_dna_assays,
         PGG    => \&load_dna_assays,
+        #NOTE not setup to handle plates below yet
         EP     => \&load_colony_pick_data,
         EPD    => \&load_primer_band_data, #TODO also load_sequencing_assays?
         REPD   => \&load_primer_band_data,
@@ -838,7 +844,7 @@ sub common_assay_data {
         $total_migrated  += $migrated;
     }
     continue {
-        Log::Log4perl::NDC->pop;
+        Log::Log4perl::NDC->remove;
     }
 
     INFO( "Successfully migrated $total_migrated of $total_attempted wells" );
