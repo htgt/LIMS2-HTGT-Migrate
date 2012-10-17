@@ -92,7 +92,7 @@ sub oligos_for {
 sub sanity_check_oligos {
     my ( $design_type, $oligos ) = @_;
 
-    die "Design has no validated oligos with NCBIM37 locus\n"
+    die "Design has no validated oligos with $ASSEMBLY locus\n"
         unless @{$oligos} > 1;
     
     my %loci = map { $_->{type} => $_->{loci}[0] } @{$oligos};
