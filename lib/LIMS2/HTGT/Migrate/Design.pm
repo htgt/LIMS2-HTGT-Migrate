@@ -4,7 +4,7 @@ use strict;
 use warnings FATAL => 'all';
 
 use Sub::Exporter -setup => {
-    exports => [ qw( get_design_data ) ]
+    exports => [ qw( get_design_data get_target_region_slice get_target_gene get_target_transcript ) ]
 };
 
 use Const::Fast;
@@ -14,6 +14,18 @@ use HTGT::Utils::DesignPhase qw( get_phase_from_design_and_transcript );
 use List::MoreUtils qw( uniq );
 use Log::Log4perl qw( :easy );
 use Try::Tiny;
+use Bio::EnsEMBL::Registry;
+
+const my $SPECIES => 'mouse';
+
+my $registry = 'Bio::EnsEMBL::Registry';
+$registry->load_registry_from_db(
+    -host => $ENV{HTGT_ENSEMBL_HOST} || 'ens-livemirror.internal.sanger.ac.uk',
+    -user => $ENV{HTGT_ENSEMBL_USER} || 'ensro'
+);
+
+my $slice_adaptor = $registry->get_adaptor( $SPECIES, 'core', 'slice' );
+my $gene_adaptor = $registry->get_adaptor( $SPECIES, 'core', 'gene' );
 
 const my $ASSEMBLY => 'GRCm38';
 
@@ -30,8 +42,8 @@ sub get_design_data {
     my $design = shift;
 
     DEBUG( "get_design_data" );
-    
-    my $run_date = DateTime->now;   
+
+    my $run_date = DateTime->now;
 
     my $type         = type_for( $design );
     my $oligos       = oligos_for( $design, $type );
@@ -85,7 +97,7 @@ sub oligos_for {
     }
 
     sanity_check_oligos( $design_type, \@oligos );
-    
+
     return \@oligos;
 }
 
@@ -94,7 +106,7 @@ sub sanity_check_oligos {
 
     die "Design has no validated oligos with $ASSEMBLY locus\n"
         unless @{$oligos} > 1;
-    
+
     my %loci = map { $_->{type} => $_->{loci}[0] } @{$oligos};
 
     my @chromosomes = uniq map { $_->{chr_name} } values %loci;
@@ -137,7 +149,7 @@ sub genotyping_primers_for {
         {
             join     => [ 'feature_type' ],
             prefetch => [ 'feature_type', { 'feature_data' => 'feature_data_type' } ]
-        }   
+        }
     );
 
     while ( my $feature = $feature_rs->next ) {
@@ -196,7 +208,7 @@ sub type_for {
         return 'artificial-intron';
     }
 
-    my $dt = $design->design_type;    
+    my $dt = $design->design_type;
 
     if ( !defined($dt) || $dt =~ /^KO/ ) {
         return 'conditional';
@@ -214,15 +226,17 @@ sub type_for {
 }
 
 sub target_transcript_for {
-    my ( $design ) = @_;    
+    my ( $design ) = @_;
 
+    my $target_transcript;
     try {
-        $design->info->target_transcript;
+        $target_transcript = get_target_transcript( $design );
     } catch {
         s/ at .*$//s;
         WARN( "Error getting target transcript " . $_ );
-        undef;
     };
+
+    return $target_transcript;
 }
 
 sub gene_ids_for {
@@ -240,6 +254,108 @@ EOT
     );
 
     return $projects;
+}
+
+sub get_target_transcript {
+    my $design = shift;
+
+    my @best_transcripts;
+    my $longest_transcript_length = 0;
+    my $longest_translation_length = 0;
+
+    my $target_gene = get_target_gene( $design );
+
+    for my $transcript ( @{ $target_gene->get_all_Transcripts } ) {
+        my $translation = $transcript->translation
+            or next;
+        if ( $translation->length > $longest_translation_length ) {
+            @best_transcripts = ( $transcript );
+            $longest_translation_length = $translation->length;
+            $longest_transcript_length = $transcript->length;
+        }
+        elsif ( $translation->length == $longest_translation_length ) {
+            if ( $transcript->length > $longest_transcript_length ) {
+                @best_transcripts = ( $transcript );
+                $longest_transcript_length = $transcript->length;
+            }
+            elsif ( $transcript->length == $longest_transcript_length ) {
+                push @best_transcripts, $transcript;
+            }
+        }
+    }
+
+    die $target_gene->stable_id . ' has no coding transcripts'
+        unless @best_transcripts;
+
+    return shift @best_transcripts;
+}
+
+sub get_target_gene {
+    my $design = shift;
+
+    my $target_region_slice = get_target_region_slice( $design );
+
+    my $exons = $target_region_slice->get_all_Exons;
+    die "No exons found in target region"
+        unless @{$exons};
+
+    my %genes_in_target_region;
+    for my $e ( @{$exons} ) {
+        my $gene = $gene_adaptor->fetch_by_exon_stable_id( $e->stable_id );
+        $genes_in_target_region{ $gene->stable_id } ||= $gene;
+    }
+
+    my $target_gene;
+
+    if ( keys %genes_in_target_region == 1 ) {
+        $target_gene = (values %genes_in_target_region)[0];
+    }
+    else {
+        die 'multiple genes found in target region ' . join( ' ', keys %genes_in_target_region );
+    }
+
+    return $target_gene->transfer( $design->info->slice );
+}
+
+sub get_target_region_slice {
+    my $design = shift;
+
+    my $features = $design->validated_display_features;
+    my $type = $design->design_type || 'KO';
+    my $strand = $design->info->chr_strand;
+
+    my ( $target_region_start, $target_region_end );
+
+    if ( $type =~ /^Del/ || $type =~ /^Ins/ ) {
+        if ( $strand == 1 ) {
+            $target_region_start = $features->{U5}->feature_start;
+            $target_region_end   = $features->{D3}->feature_end;
+        }
+        else {
+            $target_region_start = $features->{D3}->feature_start;
+            $target_region_end   = $features->{U5}->feature_end;
+        }
+
+    }
+    # Knock Out Design
+    else {
+        if ( $strand == 1 ) {
+            $target_region_start = $features->{U3}->feature_start;
+            $target_region_end   = $features->{D5}->feature_end;
+        }
+        else {
+            $target_region_start = $features->{D5}->feature_start;
+            $target_region_end   = $features->{U3}->feature_end;
+        }
+    }
+
+    return $slice_adaptor->fetch_by_region(
+        'chromosome',
+        $design->info->chr_name,
+        $target_region_start,
+        $target_region_end,
+        $design->info->chr_strand
+    );
 }
 
 1;
