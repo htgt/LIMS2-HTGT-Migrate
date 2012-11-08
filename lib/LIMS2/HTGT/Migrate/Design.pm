@@ -39,7 +39,7 @@ const my @GENOTYPING_PRIMER_NAMES => qw( GF1 GF2 GF3 GF4
 const my @OLIGO_NAMES => qw( G5 U5 U3 D5 D3 G3 );
 
 sub get_design_data {
-    my $design = shift;
+    my ( $design, $target_gene ) = @_;
 
     DEBUG( "get_design_data" );
 
@@ -48,7 +48,7 @@ sub get_design_data {
     my $type         = type_for( $design );
     my $oligos       = oligos_for( $design, $type );
     my $created_date = parse_oracle_date( $design->created_date ) || $run_date;
-    my $transcript   = target_transcript_for( $design );
+    my $transcript   = target_transcript_for( $design, $target_gene );
     die 'No transcript found for design' unless $transcript;
     return {
         id                      => $design->design_id,
@@ -226,11 +226,11 @@ sub type_for {
 }
 
 sub target_transcript_for {
-    my ( $design ) = @_;
+    my ( $design, $target_gene ) = @_;
 
     my $target_transcript;
     try {
-        $target_transcript = get_target_transcript( $design );
+        $target_transcript = get_target_transcript( $design, $target_gene );
     } catch {
         s/ at .*$//s;
         WARN( "Error getting target transcript " . $_ );
@@ -257,13 +257,13 @@ EOT
 }
 
 sub get_target_transcript {
-    my $design = shift;
+    my ( $design, $target_gene_name ) = @_;
 
     my @best_transcripts;
     my $longest_transcript_length = 0;
     my $longest_translation_length = 0;
 
-    my $target_gene = get_target_gene( $design );
+    my $target_gene = get_target_gene( $design, $target_gene_name );
 
     for my $transcript ( @{ $target_gene->get_all_Transcripts } ) {
         my $translation = $transcript->translation
@@ -291,7 +291,7 @@ sub get_target_transcript {
 }
 
 sub get_target_gene {
-    my $design = shift;
+    my ( $design, $target_gene_name ) = @_;
 
     my $target_region_slice = get_target_region_slice( $design );
 
@@ -309,6 +309,9 @@ sub get_target_gene {
 
     if ( keys %genes_in_target_region == 1 ) {
         $target_gene = (values %genes_in_target_region)[0];
+    }
+    elsif ( $target_gene_name && exists $genes_in_target_region{ $target_gene_name } ) {
+        $target_gene = $genes_in_target_region{$target_gene_name};
     }
     else {
         die 'multiple genes found in target region ' . join( ' ', keys %genes_in_target_region );
