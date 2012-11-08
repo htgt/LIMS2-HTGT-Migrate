@@ -20,7 +20,7 @@ const my @RECOMBINASE => qw( Cre Flp Dre );
 my ( $htgt, $lims2, $qc_schema );
 
 sub migrate_plate {
-    my $plate = shift;
+    my ( $plate, $well_name ) = @_;
 
     DEBUG( "Migrating plate $plate" );
 
@@ -36,6 +36,7 @@ sub migrate_plate {
     return unless $lims2_plate;
 
     for my $well ( $plate->wells ) {
+        next if $well_name && $well_name ne $well->well_name;
         next unless defined $well->design_instance_id; # skip empty wells
         $attempted++;
         Log::Log4perl::NDC->push( $well->well_name );
@@ -814,6 +815,8 @@ sub common_assay_data {
         'debug'   => sub { $log4perl{level} = $DEBUG },
         'verbose' => sub { $log4perl{level} = $INFO },
         'log=s'   => sub { $log4perl{file}  = '>>' . $_[1] },
+        'gene_design_list=s' => \my $gene_list,
+        'well=s'             => \my $well_name,
     ) or die "Usage: $0 [OPTIONS] [PLATE_NAME ...]\n";
 
     Log::Log4perl->easy_init( \%log4perl );
@@ -839,7 +842,7 @@ sub common_assay_data {
             WARN( "Refusing to migrate vector template plate" );
             next;
         }
-        my ( $attempted, $migrated ) = migrate_plate( $plate );
+        my ( $attempted, $migrated ) = migrate_plate( $plate, $well_name );
         $total_attempted += $attempted;
         $total_migrated  += $migrated;
     }
