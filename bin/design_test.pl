@@ -148,6 +148,8 @@ sub check_features {
         };
     }
 
+    check_g5_to_g3_length( $features, $strand );
+
     if ( $strand == 1 ) {
         if ( $features->{G5}->feature_start > $features->{G3}->feature_start ) {
             LOGDIE( 'G5 oligo after G3 oligo on +ve strand' );
@@ -160,6 +162,20 @@ sub check_features {
     }
 
     sanity_check_oligos( $design_type, \@oligos );
+}
+
+sub check_g5_to_g3_length {
+    my ( $features, $strand ) = @_;
+
+    my $length;
+    if ( $strand == 1 ) {
+        $length = $features->{G3}->feature_start - $features->{G5}->feature_end;
+    }
+    else {
+        $length = $features->{G5}->feature_start - $features->{G3}->feature_end;
+    }
+
+    INFO("Number of bases between G oligoes : $length");
 }
 
 sub sanity_check_oligos {
