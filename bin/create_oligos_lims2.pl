@@ -10,7 +10,6 @@ use List::MoreUtils qw(uniq);
 use Log::Log4perl qw( :easy );
 use Try::Tiny;
 use Getopt::Long;
-
 my $lims2;
 
 const my @OLIGO_NAMES => qw( G5 U5 U3 D5 D3 G3 );
@@ -19,7 +18,7 @@ my $schema = HTGT::DBFactory->connect('eucomm_vector');
 
 {
     my %log4perl = (
-        level  => $WARN,
+        level  => $INFO,
         layout => '%d %p %x %m%n'
     );
 
@@ -60,14 +59,21 @@ sub migrate_design_oligo_loci {
     };
     die("design does not exist in lims2: " . $design_id) unless $lims2_design;
 
-    my %lims_oligos_details = map { $_->{type} => $_->{locus}{assembly} } @{$lims2_design->{oligos}};
+    my %lims_oligos_details = map { $_->{type} => $_->{locus}{assembly} } grep{ $_->{locus} && %{ $_->{locus} } } @{$lims2_design->{oligos}};
+
     for my $oligo ( @{$oligos} ) {
-        if (! exists $lims_oligos_details{$oligo->{oligo_type}} or $lims_oligos_details{$oligo->{oligo_type}} ne $oligo->{assembly} ) {
-            INFO('CREATED: create oligo for design: ' . $oligo->{design_id} . ' type ' . $oligo->{oligo_type} );
-            $lims2->POST( 'design_oligo_locus', $oligo );
+        if (exists $lims_oligos_details{$oligo->{oligo_type}} ){
+              if ( $lims_oligos_details{$oligo->{oligo_type}} ne $oligo->{assembly} ) {
+                  INFO('CREATED: create oligo for design: ' . $oligo->{design_id} . ' type ' . $oligo->{oligo_type} );
+                  $lims2->POST( 'design_oligo_locus', $oligo );
+              }
+              else {
+                  WARN('ALREADY EXISTS: did not create oligo for design: ' . $oligo->{design_id} . ' type ' . $oligo->{oligo_type} );
+              }
         }
         else {
-            WARN('ALREADY EXISTS: did not create oligo for design: ' . $oligo->{design_id} . ' type ' . $oligo->{oligo_type} );
+           INFO('CREATED: create oligo for design: ' . $oligo->{design_id} . ' type ' . $oligo->{oligo_type} );
+           $lims2->POST( 'design_oligo_locus', $oligo );
         }
     }
 }
