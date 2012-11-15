@@ -26,7 +26,7 @@ my $schema = HTGT::DBFactory->connect('eucomm_vector');
     GetOptions(
         'verbose' => sub { $log4perl{level} = $INFO },
         'debug'   => sub { $log4perl{level} = $DEBUG },
-    ) and @ARGV = 1;
+    );
 
     Log::Log4perl->easy_init( \%log4perl );
     $lims2 = LIMS2::REST::Client->new_with_config();
