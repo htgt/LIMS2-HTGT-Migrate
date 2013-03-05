@@ -14,6 +14,7 @@ use Data::Dump qw( pp );
 use Try::Tiny;
 use HTTP::Status qw( :constants );
 use Getopt::Long;
+use Smart::Comments;
 
 const my @RECOMBINASE => qw( Cre Flp Dre );
 
@@ -57,20 +58,17 @@ sub migrate_plate {
 
 sub migrate_well {
     my ( $lims2_plate, $htgt_well ) = @_;
-
     # Empty wells have already been excluded from the target plate, we
     # will only encounter an empty well here if it's the parent of a
     # well we're trying to migrate. This means something bad has
     # happened.
     die "Cannot migrate well with null design instance: $htgt_well"
         unless defined $htgt_well->design_instance_id;
-
     my $lims2_well = retrieve_lims2_well( $htgt_well );
     if ( defined $lims2_well ) {
         DEBUG( "Well $htgt_well already exists in LIMS2" );
         return $lims2_well;
     }
-
     # Ensure that the parent well (if any) exists in LIMS2
     my $htgt_parent_well = $htgt_well->parent_well;
     if ( $htgt_parent_well ) {
@@ -79,29 +77,22 @@ sub migrate_well {
             $htgt_parent_well
         );
     }
-
     my $process_type = process_type_for( $htgt_parent_well, $htgt_well );
-
     my $well_data = build_well_data( $htgt_well, $htgt_parent_well, $process_type );
-
     # If this is a create_di process, ensure the design exists in
     # LIMS2 before attempting to create the well
     if ( $process_type eq 'create_di' ) {
         retrieve_or_create_lims2_design( $well_data->{process_data}{design_id} );
     }
-
     INFO( "Migrating well $htgt_well, process $process_type" );
 
     $lims2_well = create_lims2_well( $well_data );
 
-
     load_assay_data( $htgt_well, $process_type );
-
     my $accepted_data = build_accepted_data( $htgt_well );
     if ( $accepted_data ) {
         $lims2->POST( 'well', 'accepted', $accepted_data );
     }
-
     return $lims2_well;
 }
 
@@ -189,10 +180,8 @@ sub create_lims2_plate {
 
 sub retrieve_lims2_well {
     my $well = shift;
-
     my $plate_name = $well->plate->name;
-    my $well_name  = $well->well_name;
-
+    my $well_name  = format_well_name($well->well_name);
     my $lims2_well = try {
         $lims2->GET( 'well', { plate_name => $plate_name, well_name => $well_name } );
     }
@@ -335,7 +324,7 @@ sub build_well_data {
     elsif ( $process_type eq 'clone_pool' ) {
         # no aux data
     }
-    elsif ( $process_type eq 'freezing' ) {
+    elsif ( $process_type eq 'freeze' ) {
         #no aux data
     }
     elsif ( $process_type eq 'first_electroporation' ) {
@@ -419,7 +408,7 @@ sub lims2_plate_type {
         return 'INT';
     }
 
-    if ( $plate->type eq 'PGD' or $plate->type eq 'GR' or $plate->type eq 'GRQ' ) {
+    if ( $plate->type eq 'PGD' or $plate->type eq 'GR' ) {
         my @queue = ( $plate );
         while ( @queue ) {
             my $pplate = shift @queue;
@@ -429,15 +418,26 @@ sub lims2_plate_type {
             my %parent_plates = map { $_->plate_id => $_ }
                 map { $_->parent_well_id ? $_->parent_well->plate : () }
                     $pplate->wells;
-            push @queue, grep { $_->type eq 'PGD' or $_->type eq 'GR' or $_->type eq 'GRQ' } values %parent_plates;
+            push @queue, grep { $_->type eq 'PGD' or $_->type eq 'GR' } values %parent_plates;
         }
         return 'POSTINT';
     }
 
-    if ( $plate->type eq 'GRD' or $plate->type eq 'PGG' ) {
+    if ( $plate->type eq 'GRD' or $plate->type eq 'PGG' or $plate->type eq 'GRQ' ) {
         return 'DNA';
     }
 
+    if ( $plate->type eq 'EP' ){
+        return 'EP';
+    }
+
+    if ( $plate->type eq 'EPD' ){
+        return 'EP_PICK';
+    }
+
+    if ( $plate->type eq 'FP' ){
+        return 'FP';
+    }
     #NOTE, only migrated plates up to type DNA, the code to migrate other plate types is
     # here but it is untested
 
@@ -448,7 +448,7 @@ sub lims2_plate_type {
 
     const my %HANDLER_FOR_TRANSITION => (
         ROOT => {
-            DESIGN  => sub { 'create_di' }
+            DESIGN  => sub { 'create_di' },
         },
         DESIGN => {
             INT     => sub { 'int_recom' },
@@ -460,31 +460,38 @@ sub lims2_plate_type {
         },
         POSTINT => {
             POSTINT => compute_process_type( qw( 2w_gateway recombinase rearray ) ),
-            FINAL   => compute_process_type( qw( 2w_gateway recombinase ) )
+            FINAL   => compute_process_type( qw( 2w_gateway recombinase ) ),
         },
         FINAL => {
             FINAL   => compute_process_type( qw( recombinase rearray ) ),
-            DNA     => sub { 'dna_prep' }
+            DNA     => sub { 'dna_prep' },
         },
-        # NOTE not setup to handle processes below yet
         DNA => {
-            EP => sub { 'first_electroporation' }
+            DNA => sub { 'rearray' },
+            EP => sub { 'first_electroporation' },
         },
         EP => {
-            EP_PICK => sub { 'colony_pick' }, # EPD in HTGT
-            XEP     => sub { 'recombinase' }, # Flp excision
+            EP => sub { 'rearray' },
+            EP_PICK => sub { 'clone_pick' }, # EPD in HTGT
+            # NOTE not setup to handle this processes
+#            XEP     => sub { 'recombinase' }, # Flp excision
         },
         EP_PICK => {
-            FP => sub { 'freeze' }
+            EP_PICK => sub { 'rearray'},
+            FP => sub { 'freeze' },
         },
+        FP => {
+            FP => sub { 'rearray' },
+        },
+        # NOTE not setup to handle processes below yet
         XEP => {
-            XEP_POOL => sub { 'colony_pool' },
-            XEP_PICK => sub { 'colony_pick' }, # EPD in HTGT
-            SEP      => sub { 'second_electroporation' }
+            XEP_POOL => sub { 'clone_pool' },
+            XEP_PICK => sub { 'clone_pick' }, # EPD in HTGT
+            SEP      => sub { 'second_electroporation' },
         },
         SEP => {
-            SEP_PICK => sub { 'colony_pick' },
-            SEP_POOL => sub { 'colony_pool' },
+            SEP_PICK => sub { 'clone_pick' },
+            SEP_POOL => sub { 'clone_pool' },
         },
         SEP_PICK => {
             SFP => sub { 'freeze' }
@@ -594,20 +601,20 @@ sub recombinase_for {
 
 {
     my %ASSAY_DATA_HANDLER = (
-        DESIGN => \&load_recombineering_assays,
-        PCS    => \&load_sequencing_assays,
-        PC     => \&load_sequencing_assays,
-        PG     => \&load_sequencing_assays,
-        PGD    => \&load_sequencing_assays,
-        GR     => \&load_sequencing_assays,
-        GRQ    => \&load_sequencing_assays,
-        GRD    => \&load_dna_assays,
-        PGG    => \&load_dna_assays,
+        DESIGN => [\&load_recombineering_assays,],
+        PCS    => [\&load_sequencing_assays,],
+        PC     => [\&load_sequencing_assays,],
+        PG     => [\&load_sequencing_assays,],
+        PGD    => [\&load_sequencing_assays,],
+        GR     => [\&load_sequencing_assays,],
+        GRQ    => [\&load_sequencing_assays, \&load_dna_assays,],
+        GRD    => [\&load_sequencing_assays, \&load_dna_assays,],
+        PGG    => [\&load_dna_assays,],
+        EP     => [\&load_clone_pick_data,],
+        EPD    => [\&load_primer_band_data, \&load_sequencing_assays,],
         #NOTE not setup to handle plates below yet
-        EP     => \&load_colony_pick_data,
-        EPD    => \&load_primer_band_data, #TODO also load_sequencing_assays?
-        REPD   => \&load_primer_band_data,
-        PIQ    => \&load_primer_band_data,
+        REPD   => [\&load_primer_band_data,],
+        PIQ    => [\&load_primer_band_data,],
     );
 
     sub load_assay_data {
@@ -619,27 +626,36 @@ sub recombinase_for {
 
         my %well_data = map { $_->data_type => $_ } $htgt_well->well_data;
 
-        return $ASSAY_DATA_HANDLER{$plate_type}->($htgt_well, \%well_data);
+        for my $assay_handler ( @{ $ASSAY_DATA_HANDLER{$plate_type} } ){
+            $assay_handler->($htgt_well, \%well_data);
+        }
+        return 1;
     }
 }
 
 {
     const my @COLONY_RESULTS => qw(
-        BLUE_COLONIES
-        TOTAL_COLONIES
-        COLONIES_PICKED
-        WHITE_COLONIES
-        REMAINING_UNSTAINED_COLONIES
+      BLUE_COLONIES
+      COLONIES_PICKED
+      WHITE_COLONIES
+      TOTAL_COLONIES
+      REMAINING_UNSTAINED_COLONIES
     );
 
-    sub load_colony_pick_data {
+    my %MAPPING = (
+        COLONIES_PICKED => "picked_colonies",
+    );
+
+
+    sub load_clone_pick_data {
         my ( $htgt_well, $well_data ) = @_;
 
-        for my $wd ( map { $well_data->{$_} or () } @COLONY_RESULTS ) {
-            my $type = lc $wd->data_type;
+        for (@COLONY_RESULTS) {
+            my $wd = $well_data->{$_};
+            next unless $wd;
             my $assay = common_assay_data( $htgt_well, $wd );
-            $assay->{colony_type} = $type;
-            $assay->{count} = $wd->data_value;
+            $assay->{colony_count_type} = lc ($MAPPING{ $wd->data_type } or $wd->data_type);
+            $assay->{colony_count} = $wd->data_value;
             create_lims2_well_assay( 'colony_picks', $assay );
         }
     }

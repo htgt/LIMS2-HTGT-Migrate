@@ -10,7 +10,7 @@ use Sub::Exporter -setup => {
 use Const::Fast;
 use DateTime;
 use LIMS2::HTGT::Migrate::Utils qw( parse_oracle_date canonical_username );
-use HTGT::Utils::DesignPhase qw( get_phase_from_design_and_transcript );
+use HTGT::Utils::DesignPhase qw( get_phase_from_design_and_transcript phase_warning_comment );
 use List::MoreUtils qw( uniq );
 use Log::Log4perl qw( :easy );
 use Try::Tiny;
@@ -60,7 +60,7 @@ sub get_design_data {
         validated_by_annotation => $design->validated_by_annotation || '',
         oligos                  => $oligos,
         genotyping_primers      => genotyping_primers_for( $design ),
-        comments                => comments_for( $design, $created_date ),
+        comments                => comments_for( $design, $created_date, $transcript->stable_id ),
         target_transcript       => $transcript ? $transcript->stable_id : undef,
         gene_ids                => gene_ids_for( $design ),
         species                 => 'Mouse',
@@ -168,7 +168,7 @@ sub genotyping_primers_for {
 }
 
 sub comments_for {
-    my ( $design, $created_date ) = @_;
+    my ( $design, $created_date, $transcript_id ) = @_;
 
     my @comments;
     for my $comment ( $design->design_user_comments ) {
@@ -184,7 +184,25 @@ sub comments_for {
         };
     }
 
+    add_comment(\@comments, phase_warning_comment($transcript_id));
+
     return \@comments;
+}
+
+sub add_comment{
+    my ( $comments, $comment_text) = @_;
+
+    if ($comment_text){
+        push @$comments, {
+            comment_text => $comment_text,
+            category     => 'Warning!',
+            created_by   => 'htgt_migrate',
+            created_at   => DateTime->today->iso8601,
+            is_public    => 1
+        };
+        return 1;
+    }
+    return;
 }
 
 sub type_for {
