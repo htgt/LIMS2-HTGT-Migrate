@@ -48,23 +48,31 @@ sub get_design_data {
     my $type         = type_for( $design );
     my $oligos       = oligos_for( $design, $type );
     my $created_date = parse_oracle_date( $design->created_date ) || $run_date;
-    my $transcript   = target_transcript_for( $design, $target_gene );
-    die 'No transcript found for design' unless $transcript;
-    return {
+    my $transcript = target_transcript_for( $design, $target_gene );
+    my $design_data = {
         id                      => $design->design_id,
         name                    => $design->find_or_create_name,
         type                    => $type,
         created_by              => ( $design->created_user ? canonical_username( $design->created_user) : 'unknown' ),
         created_at              => $created_date->iso8601,
-        phase                   => get_phase_from_design_and_transcript( $design, $transcript->stable_id ),
         validated_by_annotation => $design->validated_by_annotation || '',
         oligos                  => $oligos,
         genotyping_primers      => genotyping_primers_for( $design ),
-        comments                => comments_for( $design, $created_date, $transcript->stable_id ),
-        target_transcript       => $transcript ? $transcript->stable_id : undef,
+        comments                => comments_for( $design, $created_date, $transcript ),
         gene_ids                => gene_ids_for( $design ),
         species                 => 'Mouse',
     };
+
+    if ( $transcript ) {
+        my $phase = try{ get_phase_from_design_and_transcript( $design, $transcript->stable_id ) };
+        $design_data->{target_transcript} = $transcript->stable_id;
+        $design_data->{phase} = $phase if $phase;
+    }
+    else{
+        WARN( 'Transcript not found for design, also means phase not calculated' );
+    }
+
+    return $design_data;
 }
 
 sub oligos_for {
@@ -158,17 +166,25 @@ sub genotyping_primers_for {
             WARN( 'Found ' . @primer_seq . ' sequences for genotyping primer ' . $feature->feature_type->description );
             next;
         }
+
+        my $seq = $primer_seq[0]->data_item;
+        unless ( $seq ) {
+            WARN( 'No sequence found for genotyping primer ' . $feature->feature_type->description );
+            next;
+        }
+
         push @genotyping_primers, {
             type => $feature->feature_type->description,
             seq  => $primer_seq[0]->data_item
         }
     }
+    ### @genotyping_primers
 
     return \@genotyping_primers;
 }
 
 sub comments_for {
-    my ( $design, $created_date, $transcript_id ) = @_;
+    my ( $design, $created_date, $transcript ) = @_;
 
     my @comments;
     for my $comment ( $design->design_user_comments ) {
@@ -184,7 +200,7 @@ sub comments_for {
         };
     }
 
-    add_comment(\@comments, phase_warning_comment($transcript_id));
+    add_comment(\@comments, phase_warning_comment($transcript->stable_id)) if $transcript;
 
     return \@comments;
 }
