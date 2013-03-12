@@ -309,6 +309,12 @@ sub build_well_data {
         $process_data{backbone} = $backbone;
         $process_data{recombinase} = recombinase_for($well);
     }
+    elsif ( $process_type eq 'legacy_gateway' ) {
+        my ( $cassette, $backbone ) = cassette_backbone_transition( $parent_well, $well );
+        $process_data{cassette} = $cassette;
+        $process_data{backbone} = $backbone;
+        $process_data{recombinase} = recombinase_for($well);
+    }
     elsif ( $process_type eq 'recombinase' ) {
         $process_data{recombinase} = recombinase_for($well);
     }
@@ -415,6 +421,9 @@ sub lims2_plate_type {
             if ( ( $pplate->plate_data_value( 'final_vectors' ) || 'no' ) eq 'yes' ) {
                 return 'FINAL';
             }
+            elsif ( ( $pplate->plate_data_value( 'final_picks' ) || 'no' ) eq 'yes' ) {
+                return 'FINAL_PICK';
+            }
             my %parent_plates = map { $_->plate_id => $_ }
                 map { $_->parent_well_id ? $_->parent_well->plate : () }
                     $pplate->wells;
@@ -454,17 +463,22 @@ sub lims2_plate_type {
             INT     => sub { 'int_recom' },
         },
         INT => {
-            INT     => sub { 'rearray' },
-            POSTINT => compute_process_type( qw( 2w_gateway 3w_gateway ) ),
-            FINAL   => compute_process_type( qw( 2w_gateway 3w_gateway ) ),
+            INT        => sub { 'rearray' },
+            POSTINT    => compute_process_type( qw( 2w_gateway 3w_gateway ) ),
+            FINAL      => compute_process_type( qw( 2w_gateway 3w_gateway ) ),
+            FINAL_PICK => sub{ 'legacy_gateway' },
         },
         POSTINT => {
             POSTINT => compute_process_type( qw( 2w_gateway recombinase rearray ) ),
             FINAL   => compute_process_type( qw( 2w_gateway recombinase ) ),
         },
         FINAL => {
-            FINAL   => compute_process_type( qw( recombinase rearray ) ),
-            DNA     => sub { 'dna_prep' },
+            FINAL      => compute_process_type( qw( recombinase rearray ) ),
+            FINAL_PICK => sub { 'final_pick' },
+            DNA        => sub { 'dna_prep' },
+        },
+        FINAL_PICK => {
+            FINAL_PICK => sub { 'final_pick' },
         },
         DNA => {
             DNA => sub { 'rearray' },
