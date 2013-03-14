@@ -31,10 +31,11 @@ sub migrate_plate {
         retrieve_or_create_lims2_plate( $plate )
     }
     catch {
-        ERROR('Unable to retrieve or create lims2 plate' . $_);
+        ERROR('Unable to retrieve or create lims2 plate ' . $_);
+        undef;
     };
 
-    return unless $lims2_plate;
+    return( $attempted, $migrated ) unless $lims2_plate;
 
     for my $well ( $plate->wells ) {
         next if $well_name && $well_name ne $well->well_name;
@@ -165,6 +166,17 @@ sub retrieve_lims2_plate {
         $_->throw() unless $_->not_found;
         undef;
     };
+
+    # check plate type
+    if ( $lims2_plate ) {
+        my $htgt_plate_type = lims2_plate_type( $plate );
+        my $lims2_plate_type = $lims2_plate->{type};
+
+        if ( $htgt_plate_type ne $lims2_plate_type ) {
+            die( "ERROR: plate type in LIMS2 ( $lims2_plate_type ) does not match the plate type we have calculated ( $htgt_plate_type )" )
+        }
+
+    }
 
     return $lims2_plate;
 }
