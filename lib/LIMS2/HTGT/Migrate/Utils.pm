@@ -99,7 +99,7 @@ sub format_bac_library {
     if ( $str eq '129' ) {
         return $str;
     }
-    elsif ( $str eq 'black6' or $str eq 'black6_M37' ) {
+    elsif ( $str eq 'black6' or $str eq 'black6_M37' or $str eq 'black6_GRCm38' ) {
         return 'black6';
     }
     else {
