@@ -150,8 +150,8 @@ sub retrieve_or_create_lims2_design {
 
 sub retrieve_or_create_lims2_plate {
     my $plate = shift;
-
     return retrieve_lims2_plate( $plate ) || create_lims2_plate( build_plate_data($plate) );
+
 }
 
 sub retrieve_lims2_plate {
@@ -177,13 +177,11 @@ sub retrieve_lims2_plate {
         }
 
     }
-
     return $lims2_plate;
 }
 
 sub create_lims2_plate {
     my $plate_data = shift;
-
     INFO( "Creating plate $plate_data->{name}, type $plate_data->{type}" );
     my $lims2_plate = $lims2->POST( 'plate', $plate_data );
 
@@ -345,6 +343,9 @@ sub build_well_data {
     elsif ( $process_type eq 'freeze' ) {
         #no aux data
     }
+    elsif ( $process_type eq 'final_pick' ) {
+        #no aux data
+    }
     elsif ( $process_type eq 'first_electroporation' ) {
         my $cell_line = $well->well_data_value('es_cell_line') || $well->plate->plate_data_value('es_cell_line');
         die "No es_cell_line set for $well" unless $cell_line;
@@ -426,7 +427,7 @@ sub lims2_plate_type {
         return 'INT';
     }
 
-    if ( $plate->type eq 'PGD' or $plate->type eq 'GR' ) {
+    if ( $plate->type eq 'PGD' or $plate->type eq 'GR' or $plate->type eq 'GRD' ) {
         my @queue = ( $plate );
         while ( @queue ) {
             my $pplate = shift @queue;
@@ -444,7 +445,7 @@ sub lims2_plate_type {
         return 'POSTINT';
     }
 
-    if ( $plate->type eq 'GRD' or $plate->type eq 'PGG' or $plate->type eq 'GRQ' ) {
+    if ( $plate->type eq 'PGG' or $plate->type eq 'GRQ' ) {
         return 'DNA';
     }
 
@@ -491,6 +492,7 @@ sub lims2_plate_type {
         },
         FINAL_PICK => {
             FINAL_PICK => sub { 'final_pick' },
+            DNA => sub {'dna_prep'},
         },
         DNA => {
             DNA => sub { 'rearray' },
