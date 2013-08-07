@@ -287,7 +287,8 @@ EOT
         }
     );
 
-    return $projects;
+    my @gene_info = map{ { gene_id => $_, gene_type_id => 'MGI' }  } @{ $projects };
+    return \@gene_info;
 }
 
 sub get_target_transcript {
