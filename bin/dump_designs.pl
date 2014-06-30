@@ -11,17 +11,19 @@ use Log::Log4perl qw( :easy );
 use Try::Tiny;
 use Const::Fast;
 use Getopt::Long;
+use Perl6::Slurp;
 
 const my @WANTED_DESIGN_STATUS => ( 'Ready to order', 'Ordered' );
 
 my $log_level = $WARN;
 
 GetOptions(
-    'debug'   => sub { $log_level = $DEBUG },
-    'verbose' => sub { $log_level = $INFO },
-    'start=i' => \my $start_id,
-    'end=i'   => \my $end_id,
-    'users=s' => \my $users_yaml,
+    'debug'     => sub { $log_level = $DEBUG },
+    'verbose'   => sub { $log_level = $INFO },
+    'start=i'   => \my $start_id,
+    'end=i'     => \my $end_id,
+    'users=s'   => \my $users_yaml,
+    'designs=s' => \my $design_file
 ) or die "Usage: $0 [--start=START] [--end=END] [--users=FILENAME]\n";
 
 Log::Log4perl->easy_init(
@@ -39,10 +41,18 @@ my $schema = HTGT::DBFactory->connect( 'eucomm_vector' );
 
 my $run_date = DateTime->now;
 
+my @designs;
+if ( $design_file ) {
+    @designs = map{ chomp; $_ } slurp $design_file;
+}
+elsif ( @ARGV ) {
+    @designs = @ARGV;
+}
+
 my $designs_rs;
 
-if ( @ARGV ) {
-    $designs_rs = $schema->resultset( 'Design' )->search( { design_id => \@ARGV } );
+if ( @designs ) {
+    $designs_rs = $schema->resultset( 'Design' )->search( { design_id => \@designs } );
 }
 else {
     my %search = (
