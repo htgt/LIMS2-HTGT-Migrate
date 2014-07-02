@@ -173,7 +173,7 @@ sub retrieve_lims2_plate {
         my $lims2_plate_type = $lims2_plate->{type};
 
         if ( $htgt_plate_type ne $lims2_plate_type ) {
-            die( "ERROR: plate type in LIMS2 ( $lims2_plate_type ) does not match the plate type we have calculated ( $htgt_plate_type )" )
+            die( "ERROR: $plate plate type in LIMS2 ( $lims2_plate_type ) does not match the plate type we have calculated ( $htgt_plate_type )" )
         }
 
     }
